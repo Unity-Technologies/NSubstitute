@@ -1,5 +1,5 @@
 [version]
-repoconfig=1
+repoconfig=3
 
 [format]
 path-include = ^Source/Weavers/         # limit to our own new stuff and leave the rest alone
