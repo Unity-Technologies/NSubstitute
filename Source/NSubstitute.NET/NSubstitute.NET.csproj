@@ -693,6 +693,9 @@
     <Compile Include="..\NSubstitute\SubstituteExtensions.cs">
       <Link>SubstituteExtensions.cs</Link>
     </Compile>
+    <Compile Include="..\NSubstitute\Proxies\CastleDynamicProxy\CastlePatchedInterceptorRegistry.cs">
+      <Link>CastlePatchedInterceptorRegistry.cs</Link>
+    </Compile>
     <None Include="..\nsubstitute.snk">
       <Link>Core\nsubstitute.snk</Link>
     </None>
