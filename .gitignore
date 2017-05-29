@@ -14,3 +14,7 @@ Bin/
 _ReSharper*
 .DS_Store
 Source/packages
+project.lock.json
+.vs/
+.fake/
+.idea/

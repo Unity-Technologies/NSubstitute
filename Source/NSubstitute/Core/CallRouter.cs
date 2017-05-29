@@ -64,6 +64,11 @@ namespace NSubstitute.Core
             return routeToUseForThisCall.Handle(call);
         }
 
+        public bool IsLastCallInfoPresent()
+        {
+            return _substituteState.PendingSpecification.HasPendingCallSpecInfo();
+        }
+
         public ConfiguredCall LastCallShouldReturn(IReturn returnValue, MatchArgs matchArgs)
         {
             return _substituteState.ConfigureCall.SetResultForLastCall(returnValue, matchArgs);
@@ -94,6 +99,13 @@ namespace NSubstitute.Core
         public void SetReturnForType(Type type, IReturn returnValue)
         {
             _substituteState.ResultsForType.SetResult(type, returnValue);
+        }
+
+        public void RegisterCustomCallHandlerFactory(CallHandlerFactory factory)
+        {
+            if (factory == null) throw new ArgumentNullException(nameof(factory));
+
+            _substituteState.CustomHandlers.AddCustomHandlerFactory(factory);
         }
     }
 }

@@ -1,5 +1,7 @@
 using System;
-using System.Collections.Generic;
+using System.Collections.Concurrent;
+using System.Linq;
+using System.Reflection;
 using NSubstitute.Exceptions;
 
 namespace NSubstitute.Core
@@ -30,17 +32,20 @@ namespace NSubstitute.Core
 
         private static Func<CallInfo, T> ReturnNull()
         {
-            if (typeof(T).IsValueType) throw new CannotReturnNullForValueType(typeof(T));
+            if (typeof(T).IsValueType()) throw new CannotReturnNullForValueType(typeof(T));
             return x => default(T);
         }
     }
 
     public class ReturnMultipleValues<T> : IReturn
     {
-        private readonly IEnumerator<T> _valuesToReturn;
-        public ReturnMultipleValues(IEnumerable<T> values)
+        private readonly ConcurrentQueue<T> _valuesToReturn;
+        private readonly T _lastValue;
+
+        public ReturnMultipleValues(T[] values)
         {
-            _valuesToReturn = ValuesToReturn(values).GetEnumerator();
+            _valuesToReturn = new ConcurrentQueue<T>(values);
+            _lastValue = values.LastOrDefault();
         }
         public object ReturnFor(CallInfo info) { return GetNext(); }
         public Type TypeOrNull() { return typeof (T); }
@@ -48,28 +53,25 @@ namespace NSubstitute.Core
 
         private T GetNext()
         {
-            _valuesToReturn.MoveNext();
-            return _valuesToReturn.Current;
-        }
-
-        private IEnumerable<T> ValuesToReturn(IEnumerable<T> specifiedValues)
-        {
-            T lastValue = default(T);
-            foreach (var value in specifiedValues)
+            T nextResult;
+            if (_valuesToReturn.TryDequeue(out nextResult))
             {
-                lastValue = value;
-                yield return value;
+                return nextResult;
             }
-            yield return lastValue;
+
+            return _lastValue;
         }
     }
 
     public class ReturnMultipleFuncsValues<T> : IReturn
     {
-        private readonly IEnumerator<Func<CallInfo, T>> _valuesToReturn;
-        public ReturnMultipleFuncsValues(IEnumerable<Func<CallInfo, T>> funcs)
+        private readonly ConcurrentQueue<Func<CallInfo, T>> _funcsToReturn;
+        private readonly Func<CallInfo, T> _lastFunc;
+
+        public ReturnMultipleFuncsValues(Func<CallInfo, T>[] funcs)
         {
-            _valuesToReturn = ValuesToReturn(funcs).GetEnumerator();
+            _funcsToReturn = new ConcurrentQueue<Func<CallInfo, T>>(funcs);
+            _lastFunc = funcs.LastOrDefault();
         }
         public object ReturnFor(CallInfo info) { return GetNext(info); }
         public Type TypeOrNull() { return typeof (T); }
@@ -77,19 +79,13 @@ namespace NSubstitute.Core
 
         private T GetNext(CallInfo info)
         {
-            _valuesToReturn.MoveNext();
-            return _valuesToReturn.Current(info);
-        }
-
-        private IEnumerable<Func<CallInfo, T>> ValuesToReturn(IEnumerable<Func<CallInfo, T>> specifiedFuncs)
-        {
-            Func<CallInfo, T> lastValue = default(Func<CallInfo, T>);
-            foreach (var value in specifiedFuncs)
+            Func<CallInfo, T> nextFunc;
+            if (_funcsToReturn.TryDequeue(out nextFunc))
             {
-                lastValue = value;
-                yield return value;
+                return nextFunc(info);
             }
-            yield return lastValue;
+
+            return _lastFunc(info);
         }
     }
 }

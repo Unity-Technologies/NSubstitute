@@ -94,7 +94,8 @@ namespace NSubstitute.Acceptance.Specs
 
         [Test]
         [Ignore("Long running, non-deterministic test.")]
-        [Timeout(60 * 1000)]
+        // TODO no Timeout in NUnit Core
+        //[Timeout(60 * 1000)]
         public void Create_Delegate_Substitute_From_Many_Threads()
         {
             var tasks =
@@ -110,6 +111,25 @@ namespace NSubstitute.Acceptance.Specs
             Task.StartAll(tasks);
             Task.AwaitAll(tasks);
         }
+
+#if (NET45 || NETSTANDARD1_3)
+        [Test]
+        public void Returns_multiple_values_is_threadsafe()
+        {
+            const int parallelism = 10;
+            var sut = Substitute.For<IFoo>();
+            var expected = Enumerable.Range(0, parallelism).ToArray();
+            sut.Number().Returns(expected[0], expected.Skip(1).ToArray());
+
+            var tasks = Enumerable.Range(0, parallelism)
+                .Select(_ => new System.Threading.Tasks.Task<int>(() => sut.Number()))
+                .ToArray();
+
+            foreach (var task in tasks) { task.Start(); }
+            var actual = System.Threading.Tasks.Task.WhenAll(tasks).Result;
+            Assert.That(actual, Is.EquivalentTo(expected));
+        }
+#endif
 
         public interface IFoo
         {

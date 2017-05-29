@@ -7,10 +7,17 @@ namespace NSubstitute.Specs.Infrastructure
 {
     public class TestCallRouter : ICallRouter
     {
+        public bool IsLastCallInfoPresent() => true;
+
         public ConfiguredCall LastCallShouldReturn(IReturn returnValue, MatchArgs matchArgs)
         {
             return new ConfiguredCall(x => { });
         }
+
+        public void RegisterCustomCallHandlerFactory(CallHandlerFactory factory)
+        {
+        }
+
         public void Clear(ClearOptions clear) { }
 
         public IEnumerable<ICall> ReceivedCalls() { return new ICall[0]; }

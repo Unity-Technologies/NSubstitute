@@ -1,6 +1,35 @@
-### 1.10.1 (unreleased)
+### 2.0.4 (unreleased)
+
+### 2.0.3 (April 2017)
+* [FIX] Fixed issue with stubbing multiple return values and then accessing
+them in parallel. (#282, #294). Thanks to Janusz Bia≈Çobrzewski (@jbialobr) for
+implementing this, and to Alexandr Nikitin and Alex Povar for reviewing and
+contributing to Janusz' PR.
+* [UPDATE] .NET Core build now targets netstandard-1.3 (was 1.5). Thanks to
+Ian Johnson (@ipjohnson) for this change. (#303)
+* [UPDATE] .NET Core build is now signed, which removes a warning when
+referencing .NET standard library. Thanks to Connie Yau (@conniey) for
+this change. (#302)
+* [FIX] Removed redundant .NET standard dependencies when referencing 
+NSubstitute as a .NET Framework library. Thanks to Alex Povar (@zvirja). (#295)
+
+### 2.0.2 (February 2017)
+* Dropped Release Candidate tag now that Castle.Core 4.0.0 final has been
+released.
+* [UPDATE] Updated all builds to use Castle Core 4.0.0 release.
+* [NEW] Task-compatible ReturnsNull extension method added to ReturnsExtensions (#270). Thanks to Michael Wolfenden for implementing this.
+* [NEW] Support for delegates with out/ref parameters (#271, #273). Thanks to Oleg Sych for raising this, and to Alexandr Nikitin for this fix. (Implemented for NET40/45/Core, not for NET35 at present)
+
+### 2.0.1 RC (December 2016)
+* [NEW] Initial custom handler support (#259). Mainly for integration with libraries like AutoFixture, this allows some basic fallback logic to be injected into a substitute's call handling pipeline. Thanks to Alex Povar (@zvirja) for implementing this and incorporating review comments, and also to Marcio Rinaldi (@mrinaldi) for his initial work on this in #234. Also thanks to @alexandrnikitin for a related spike (#156), and his work with Alex and Marcio in refining this feature and reviewing and merging the final PR.
+* [UPDATE] Improved concurrency support, relating to how NSubstitute tracks the last call and queued call specifications (#264). Thanks a lot to Alex Povar (@Zvirja) for designing and implementing this improvement. Thanks to Alexandr Nikitin for reviewing this PR.
+
+### 2.0.0 RC (August 2016)
+* Build: 2.0.0.0
+* [NEW] Initial .NET Core support. Thanks to @alexandrnikitin for tonnes of work on this. Thanks also to Peter Jas (@jasonwilliams200OK) for both .NET Core code contributions and help with CI setup. And thanks to everyone who contributed to the conversation and testing in https://github.com/nsubstitute/NSubstitute/pull/197.
 * [NEW] Clear substitute configuration using `sub.ClearSubstitute(ClearOptions)`. This extension can be brought in to scope via `using NSubstitute.ClearExtensions;`. Thanks to @trullock for defining and implementing this change, and to @alexandrnikitin for review feedback. (#157, #235, #179)
 * [DOC] Improved CallInfo.ArgAt documentation, thanks to asbjornu. (#231)
+* [FIX] Fix an issue with Received.InOrder when an exception is thrown. Thanks to @m3zercat for finding and fixing this. (#237)
 
 ### 1.10.0 (March 2016)
 * [NEW] Callbacks builder for more control over When..Do callbacks. Thanks to bartoszgolek. (#202, #200)
@@ -75,8 +104,8 @@
 * [UPDATE] Updated to Castle.Core 3.0.0.
 
 ### 1.4.0 (May 2012)
-* [NEW] [BREAKING] Auto-substitute for types returned from substitutes of delegates/Funcs (follows same auto-substitute rules as for methods and properties). Thanks to Sauli T‰hk‰p‰‰ for implementing this feature. (#52)
-* [NEW] Show details of params arguments when displaying received calls. Thanks to Sauli T‰hk‰p‰‰ for implementing this feature. (#65)
+* [NEW] [BREAKING] Auto-substitute for types returned from substitutes of delegates/Funcs (follows same auto-substitute rules as for methods and properties). Thanks to Sauli T√§hk√§p√§√§ for implementing this feature. (#52)
+* [NEW] Show details of params arguments when displaying received calls. Thanks to Sauli T√§hk√§p√§√§ for implementing this feature. (#65)
 * [FIX] Race condition between checking received calls and building the exception could cause nonsensical exception messages like "Expected 5, actually received 5" when called concurrently. (#64)
 
 ### 1.3.0 (Nov 2011)

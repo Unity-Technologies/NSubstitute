@@ -5,9 +5,9 @@ namespace NSubstitute.Core
     public class SubstituteState : ISubstituteState
     {
         public ISubstitutionContext SubstitutionContext { get; private set; }
-        public ICallStack CallStack { get; private set; }
+        public ICallCollection CallCollection { get; }
         public IReceivedCalls ReceivedCalls { get; private set; }
-        public IPendingSpecification PendingSpecification { get; private set; }
+        public IPendingSpecification PendingSpecification { get; }
         public ICallResults CallResults { get; private set; }
         public ICallSpecificationFactory CallSpecificationFactory { get; private set; }
         public ICallActions CallActions { get; private set; }
@@ -17,7 +17,9 @@ namespace NSubstitute.Core
         public IConfigureCall ConfigureCall { get; private set; }
         public IEventHandlerRegistry EventHandlerRegistry { get; private set; }
         public IAutoValueProvider[] AutoValueProviders { get; private set; }
+        public ICallResults AutoValuesCallResults { get; }
         public IResultsForType ResultsForType { get; private set; }
+        public ICustomHandlers CustomHandlers { get; }
 
         public SubstituteState(ISubstitutionContext substitutionContext, SubstituteConfig option)
         {
@@ -26,37 +28,35 @@ namespace NSubstitute.Core
             SequenceNumberGenerator = substitutionContext.SequenceNumberGenerator;
             var substituteFactory = substitutionContext.SubstituteFactory;
             var callInfoFactory = new CallInfoFactory();
-            var callStack = new CallStack();
-            CallStack = callStack;
-            ReceivedCalls = callStack;
-            PendingSpecification = new PendingSpecification();
+
+            var callCollection = new CallCollection();
+            CallCollection = callCollection;
+            ReceivedCalls = callCollection;
+
+            PendingSpecification = new PendingSpecification(substitutionContext);
             CallResults = new CallResults(callInfoFactory);
+            AutoValuesCallResults = new CallResults(callInfoFactory);
             CallSpecificationFactory = CallSpecificationFactoryFactoryYesThatsRight.CreateCallSpecFactory();
             CallActions = new CallActions(callInfoFactory);
             CallBaseExclusions = new CallBaseExclusions();
             ResultsForType = new ResultsForType(callInfoFactory);
-
-            var getCallSpec = new GetCallSpec(callStack, PendingSpecification, CallSpecificationFactory, CallActions);
-
+            CustomHandlers = new CustomHandlers(this);
+            var getCallSpec = new GetCallSpec(callCollection, PendingSpecification, CallSpecificationFactory, CallActions);
             ConfigureCall = new ConfigureCall(CallResults, CallActions, getCallSpec);
             EventHandlerRegistry = new EventHandlerRegistry();
+
             AutoValueProviders = new IAutoValueProvider[] { 
-#if NET45
+#if NET45 || NETSTANDARD1_3
                 new AutoObservableProvider(() => AutoValueProviders),
-#endif
                 new AutoQueryableProvider(),
-                new AutoSubstituteProvider(substituteFactory), 
-                new AutoStringProvider(), 
+#endif
+                new AutoSubstituteProvider(substituteFactory),
+                new AutoStringProvider(),
                 new AutoArrayProvider(),
-#if (NET4 || NET45)
+#if (NET4 || NET45 || NETSTANDARD1_3)
                 new AutoTaskProvider(() => AutoValueProviders),
 #endif
             };
-        }
-
-        public void ClearUnusedCallSpecs()
-        {
-            PendingSpecification.Clear();
         }
     }
 }
