@@ -1,34 +1,58 @@
-using System;
+﻿using System;
+using System.Collections.Generic;
 using System.Linq;
+using System.Net;
 using Mono.Cecil;
 using Mono.Cecil.Cil;
 using Mono.Cecil.Rocks;
 using Unity.Cecil.Visitor;
 
-namespace NSubstitute.Weaver
+namespace NSubstitute.Weaver.MscorlibWeaver.MscorlibWrapper
 {
-    class Copier
+    class Copier : ICopier
     {
+        readonly ProcessTypeResolver m_ProcessTypeResolver;
         const string k_PrefixName = "Fake.";
+        const string k_PrefixNameRaw = "Fake";
         const string k_FakeForward = "__fake_forward";
         static MethodDefinition s_FakeForwardConstructor;
         static MethodDefinition s_FakeCloneMethod;
+        static string[] s_SecurityAttributes = { "System.Security.SecurityCriticalAttribute", "System.Security.SuppressUnmanagedCodeSecurityAttribute" };
 
-        public static void Copy(AssemblyDefinition source, AssemblyDefinition target, AssemblyDefinition nsubstitute, string[] typesToCopy)
+        public Copier(ProcessTypeResolver processTypeResolver)
         {
-            var processTypeResolver = new ProcessTypeResolver(source);
-            var typeDefinitions = processTypeResolver.Resolve(typesToCopy).ToList();
+            m_ProcessTypeResolver = processTypeResolver;
+        }
+
+        public virtual void Copy(AssemblyDefinition source, ref AssemblyDefinition target, AssemblyDefinition nsubstitute, string[] typesToCopy)
+        {
+            var typeDefinitions = m_ProcessTypeResolver.Resolve(typesToCopy).ToList();
 
             // Copy in two passes to be able to move references within individual classes to other faked types.
             // Note that this functionality is not currently in use, but could prove useful for a later stage,
             // and rather than extracting the logic now, it is better to design it for this purpose up front.
 
-            foreach (var type in typeDefinitions)
+            var reservedNames = new List<string> { "<PrivateImplementationDetails>", "<Module>", "System.Void" };
+
+            foreach (var type in typeDefinitions.Where(t => reservedNames.IndexOf(t.FullName) == -1))
+            {
+                CreateTypeShim(target, type);
+            }
+
+            foreach (var type in typeDefinitions.Where(t => t.IsInterface).OrderBy(t => InheritanceHierarchySize(t.BaseType)))
                 CopyType(target, type);
 
-            foreach (var type in typeDefinitions)
+            foreach (var type in typeDefinitions.Where(t => t.IsEnum).OrderBy(t => InheritanceHierarchySize(t.BaseType)))
+                CopyType(target, type);
+
+            foreach (var type in typeDefinitions.Where(t => !t.IsInterface && !t.IsEnum && reservedNames.IndexOf(t.FullName) == -1).OrderBy(t => InheritanceHierarchySize(t.BaseType)))
+                CopyType(target, type);
+
+            foreach (var type in typeDefinitions.Where(t => reservedNames.IndexOf(t.FullName) == -1))
             {
-                var typeDefinition = target.MainModule.Types.Single(t => t.FullName == k_PrefixName + type.FullName);
+                var typeDefinition = target.MainModule.Types.SingleOrDefault(t => t.FullName == k_PrefixName + type.FullName);
+                if (typeDefinition == null)
+                    continue;
                 CopyTypeMembers(target, type, typeDefinition);
             }
 
@@ -36,69 +60,257 @@ namespace NSubstitute.Weaver
             target.Accept(visitor);
         }
 
-        static void CopyTypeMembers(AssemblyDefinition target, TypeDefinition type, TypeDefinition typeDefinition)
+        static int InheritanceHierarchySize(TypeReference typeDefinition)
+        {
+            var c = 0;
+            while (typeDefinition != null && typeDefinition.FullName != "System.Object")
+            {
+                ++c;
+                typeDefinition = typeDefinition.Resolve().BaseType;
+            }
+            return c;
+        }
+
+        void CopyTypeMembers(AssemblyDefinition target, TypeDefinition type, TypeDefinition typeDefinition)
         {
             CopyCustomAttributes(target, type, typeDefinition);
+
+            if (type.IsEnum)
+            {
+                CopyEnumValues(target, type, typeDefinition);
+                return;
+            }
 
             CreateFakeFieldForward(target, type, typeDefinition);
 
             CopyMethods(target, type, typeDefinition);
             CopyProperties(target, type, typeDefinition);
+            CreateEmptyCtorIfNotExists(target, typeDefinition);
         }
 
-        static void CopyProperties(AssemblyDefinition target, TypeDefinition type, TypeDefinition typeDefinition)
+        void CopyEnumValues(AssemblyDefinition target, TypeDefinition type, TypeDefinition typeDefinition)
+        {
+            foreach (var field in type.Fields.Where(f => f.Name != "value__"))
+            {
+                var fieldDefinition = new FieldDefinition(field.Name, field.Attributes, RecursivelyInstantiateAndImportTypeRefence(target, field.FieldType, type, typeDefinition));
+                if (field.HasConstant)
+                {
+                    fieldDefinition.Constant = field.Constant; // hope this works
+                }
+                typeDefinition.Fields.Add(fieldDefinition);
+            }
+        }
+
+        void CreateEmptyCtorIfNotExists(AssemblyDefinition target, TypeDefinition typeDefinition)
+        {
+            if (typeDefinition.IsInterface)
+                return;
+
+            if (typeDefinition.Methods.Any(m => m.IsConstructor && m.Parameters.Count == 0))
+                return;
+
+            var methodAttributes = MethodAttributes.Public| MethodAttributes.HideBySig | MethodAttributes.SpecialName | MethodAttributes.RTSpecialName;
+            if (typeDefinition.IsAbstract)
+            {
+                methodAttributes &= ~MethodAttributes.Public;
+                methodAttributes |= MethodAttributes.Family;
+            }
+            var methodDefinition = new MethodDefinition(".ctor", methodAttributes, target.MainModule.TypeSystem.Void);
+            typeDefinition.Methods.Add(methodDefinition);
+
+            AddBaseTypeCtorCall(target, typeDefinition, methodDefinition);
+        }
+
+        void CopyProperties(AssemblyDefinition target, TypeDefinition type, TypeDefinition typeDefinition)
         {
             foreach (var property in type.Properties)
             {
                 if (!property.IsPublic())
                     continue;
 
-                var propertyDefinition = new PropertyDefinition(property.Name, property.Attributes, ResolveType(target, typeDefinition, property.PropertyType));
-                if (property.GetMethod != null)
-                    propertyDefinition.GetMethod = ResolveMethod(typeDefinition, property.GetMethod);
-                if (property.SetMethod != null)
-                    propertyDefinition.SetMethod = ResolveMethod(typeDefinition, property.SetMethod);
+                var propertyDefinition = new PropertyDefinition(property.Name, property.Attributes, ResolveType(target, type, typeDefinition, null, null, property.PropertyType));
+                if (property.GetMethod != null && property.GetMethod.IsPublic)
+                    propertyDefinition.GetMethod = ResolveMethod(target, type, typeDefinition, property.GetMethod);
+                if (property.SetMethod != null && property.SetMethod.IsPublic)
+                    propertyDefinition.SetMethod = ResolveMethod(target, type, typeDefinition, property.SetMethod);
 
                 typeDefinition.Properties.Add(propertyDefinition);
             }
         }
 
-        static MethodDefinition ResolveMethod(TypeDefinition typeDefinition, MethodDefinition originalMethod)
+        MethodDefinition ResolveMethod(AssemblyDefinition target, TypeDefinition type, TypeDefinition typeDefinition, MethodDefinition originalMethod)
         {
             var candidates = typeDefinition.Methods.Where(m => m.Name == originalMethod.Name).ToList();
             if (candidates.Count == 1)
                 return candidates[0];
 
+            foreach (var candidate in candidates)
+            {
+                if (candidate.Parameters.Count != originalMethod.Parameters.Count)
+                    continue;
+
+                var parameters = originalMethod.Parameters.Select(p => ResolveType(target, type, typeDefinition, originalMethod, candidate, p.ParameterType)).ToArray();
+                if (candidate.Parameters.Zip(parameters, Tuple.Create).All(pp => pp.Item1.ParameterType.FullName == pp.Item2.FullName))
+                    return candidate;
+            }
+
             throw new NotImplementedException();
         }
 
-        static void CreateFakeFieldForward(AssemblyDefinition target, TypeDefinition type, TypeDefinition typeDefinition)
+        void CreateFakeFieldForward(AssemblyDefinition target, TypeDefinition type, TypeDefinition typeDefinition)
         {
+            if (type.IsInterface)
+                return;
+
             var field = new FieldDefinition(k_FakeForward, FieldAttributes.Assembly, target.MainModule.Import(type));
             typeDefinition.Fields.Add(field);
         }
 
-        static void CopyType(AssemblyDefinition target, TypeDefinition type)
+        static TypeReference RecursivelyInstantiateAndImportTypeRefence(AssemblyDefinition target, TypeReference instanceType, TypeDefinition originalType, TypeDefinition typeDefinition)
         {
-            // TODO: Support inheritance hierarchies when copying types over (e.g. fake StreamWriter should inherit from fake TextWriter)
+            if (instanceType.IsGenericInstance)
+            {
+                var genericInstanceType = (GenericInstanceType)instanceType;
+                var genericType = target.MainModule.Import(instanceType.Resolve());
+                var fakedGenericType = target.MainModule.Types.SingleOrDefault(t => t.FullName == k_PrefixName + genericType.FullName);
+                genericType = fakedGenericType ?? genericType;
+                var result = genericType.MakeGenericInstanceType(genericInstanceType.GenericArguments.Select(a => RecursivelyInstantiateAndImportTypeRefence(target, a, originalType, typeDefinition)).ToArray());
+                return target.MainModule.Import(result);
+            }
 
-            var baseTypeRef = type.BaseType != null ? target.MainModule.Import(type.BaseType) : null;
-            var typeDefinition = new TypeDefinition(k_PrefixName + type.Namespace, type.Name, type.Attributes & ~TypeAttributes.HasSecurity, baseTypeRef);
+            if (instanceType.IsArray)
+            {
+                var element = RecursivelyInstantiateAndImportTypeRefence(target, instanceType.GetElementType(), originalType, typeDefinition);
+                if (element.IsGenericParameter)
+                    return element.MakeArrayType();
+                return target.MainModule.Import(element.MakeArrayType());
+            }
+
+            if (!(instanceType is GenericParameter))
+            {
+                var fakedType = target.MainModule.Types.SingleOrDefault(t => k_PrefixName + instanceType.FullName == t.FullName);
+                if (fakedType != null)
+                    return target.MainModule.Import(fakedType);
+
+                return target.MainModule.Import(instanceType);
+            }
+
+            return typeDefinition.GenericParameters[originalType.GenericParameters.IndexOf((GenericParameter)instanceType)];
+        }
+
+        void CreateTypeShim(AssemblyDefinition target, TypeDefinition type)
+        {
+            if (type.BaseType?.FullName == "System.MulticastDelegate" || type.BaseType?.FullName == "System.Delegate")
+                return; // skip delegates
+
+            var typeDefinition = new TypeDefinition(type.Namespace == "" ? k_PrefixNameRaw : k_PrefixName + type.Namespace, type.Name, type.Attributes & ~TypeAttributes.HasSecurity);
+
+            if (type.HasGenericParameters)
+            {
+                foreach (var gp in type.GenericParameters)
+                    typeDefinition.GenericParameters.Add(new GenericParameter(gp.Name, typeDefinition));
+            }
 
             target.MainModule.Types.Add(typeDefinition);
         }
 
-        static void CopyMethods(AssemblyDefinition target, TypeDefinition type, TypeDefinition typeDefinition)
+
+        public TypeDefinition CopyType(AssemblyDefinition target, TypeDefinition type)
         {
-            if (!type.IsAbstract)
+            //var typeDefinition = new TypeDefinition(type.Namespace == "" ? k_PrefixNameRaw : k_PrefixName + type.Namespace, type.Name, type.Attributes & ~TypeAttributes.HasSecurity);
+            var typeDefinition = target.MainModule.Types.SingleOrDefault(t => t.FullName == $"{(type.Namespace == "" ? k_PrefixNameRaw : k_PrefixName + type.Namespace)}.{type.Name}");
+            if (typeDefinition == null)
+                return null;
+
+            if (type.BaseType != null)
             {
-                s_FakeForwardConstructor = CreateFakeForwardConstructor(target, type, typeDefinition);
-                s_FakeCloneMethod = null;
+                typeDefinition.BaseType = RecursivelyInstantiateAndImportTypeRefence(target, type.BaseType, type, typeDefinition);
             }
-            else
+            else if (type.IsClass)
             {
-                s_FakeForwardConstructor = null;
-                s_FakeCloneMethod = CreateFakeCloneMethod(target, type, typeDefinition);
+                typeDefinition.BaseType = target.MainModule.TypeSystem.Object;
+            }
+
+            //target.MainModule.Types.Add(typeDefinition);
+
+            return typeDefinition;
+        }
+
+        TypeReference Import(AssemblyDefinition target, TypeReference type)
+        {
+            if (type.IsGenericParameter)
+                return type;
+
+            return target.MainModule.Import(type);
+        }
+
+        TypeReference ResolveType(AssemblyDefinition target, TypeDefinition type, TypeDefinition typeDefinition, MethodDefinition method, MethodDefinition methodDefinition, TypeReference resolveType)
+        {
+            var typeDef = k_PrefixName + resolveType.FullName == typeDefinition.FullName;
+            if (typeDef)
+                return typeDefinition;
+
+            if (resolveType.IsGenericParameter)
+            {
+                var genericParameter = (GenericParameter)resolveType;
+                if (genericParameter.Owner == method)
+                    return methodDefinition.GenericParameters[genericParameter.Position];
+
+                if (genericParameter.Owner == type)
+                    return typeDefinition.GenericParameters[genericParameter.Position];
+
+                if (genericParameter.Owner == methodDefinition)
+                    return genericParameter;
+
+                if (genericParameter.Owner == typeDefinition)
+                    return genericParameter;
+
+                throw new InvalidOperationException();
+            }
+
+            if (resolveType.IsArray)
+            {
+                var elementType = Import(target, ResolveType(target, type, typeDefinition, method, methodDefinition, resolveType.GetElementType()));
+                return elementType.MakeArrayType(((ArrayType)resolveType).Rank);
+            }
+
+            if (resolveType.IsByReference)
+            {
+                var elementType = Import(target, ResolveType(target, type, typeDefinition, method, methodDefinition, resolveType.GetElementType()));
+                return elementType.MakeByReferenceType();
+            }
+
+            if (resolveType.IsGenericInstance)
+            {
+                var genericInstanceType = (GenericInstanceType)resolveType;
+                var genericType = target.MainModule.Import(genericInstanceType.Resolve());
+                var fakedGenericType = target.MainModule.Types.SingleOrDefault(t => t.FullName == k_PrefixName + genericType.FullName);
+                genericType = fakedGenericType ?? genericType;
+                var result = genericType.MakeGenericInstanceType(genericInstanceType.GenericArguments.Select(a => ResolveType(target, type, typeDefinition, method, methodDefinition, a)).ToArray());
+                return target.MainModule.Import(result);
+            }
+
+            var fakedType = target.MainModule.Types.SingleOrDefault(t => k_PrefixName + resolveType.FullName == t.FullName);
+            if (fakedType != null)
+                return target.MainModule.Import(fakedType);
+
+            return target.MainModule.Import(resolveType);
+        }
+
+        void CopyMethods(AssemblyDefinition target, TypeDefinition type, TypeDefinition typeDefinition)
+        {
+            if (!type.IsInterface)
+            {
+                if (!type.IsAbstract)
+                {
+                    s_FakeForwardConstructor = CreateFakeForwardConstructor(target, type, typeDefinition);
+                    s_FakeCloneMethod = null;
+                }
+                else
+                {
+                    s_FakeForwardConstructor = null;
+                    s_FakeCloneMethod = CreateFakeCloneMethod(target, type, typeDefinition);
+                }
             }
 
             foreach (var method in type.Methods)
@@ -106,40 +318,69 @@ namespace NSubstitute.Weaver
                 if (!method.IsPublic)
                     continue;
 
-                //var fakeField = CreateFakeField(target, type, typeDefinition, method);
-                //FieldDefinition fakeField = null;
-
-                var methodDefinition = new MethodDefinition(method.Name, method.Attributes & ~MethodAttributes.HasSecurity, ResolveType(target, typeDefinition, method.ReturnType));
-                foreach (var parameter in method.Parameters)
-                {
-                    var parameterDefinition = new ParameterDefinition(parameter.Name, parameter.Attributes,
-                            ResolveType(target, typeDefinition, parameter.ParameterType));
-                    methodDefinition.Parameters.Add(parameterDefinition);
-                }
-
                 if (method.Name == ".ctor")
                 {
+                    var methodDefinition = new MethodDefinition(method.Name, method.Attributes & ~MethodAttributes.HasSecurity, typeDefinition);
+
+                    if (method.HasGenericParameters)
+                    {
+                        foreach (var gp in method.GenericParameters)
+                            methodDefinition.GenericParameters.Add(new GenericParameter(gp.Name, methodDefinition));
+                    }
+
+                    methodDefinition.ReturnType = ResolveType(target, type, typeDefinition, method, methodDefinition, method.ReturnType);
+
+                    foreach (var parameter in method.Parameters)
+                    {
+                        //var parameterDefinition = new ParameterDefinition(parameter.Name, parameter.Attributes,
+                        //        ResolveType(target, typeDefinition, parameter.ParameterType));
+                        CopyParameter(target, method, typeDefinition, parameter, methodDefinition);
+                    }
+
+                    foreach (var customAttribute in method.CustomAttributes)
+                    {
+                        var attribute = CopyCustomAttribute(target, customAttribute);
+                        if (attribute != null)
+                            methodDefinition.CustomAttributes.Add(attribute);
+                    }
+
                     FillConstructor(target, type, method, typeDefinition, methodDefinition);
-                    typeDefinition.Methods.Add(methodDefinition);
                 }
                 else
                 {
-                    MethodDefinition implMethod = CreateMainImplementationForwardingMethod(target, method, typeDefinition, methodDefinition);
-                    //CreateMainFakeMethodContents(target, type, method, typeDefinition, methodDefinition, fakeField, implMethod);
+                    CreateMainImplementationForwardingMethod(target, method, typeDefinition);
                 }
-
-                //typeDefinition.Methods.Add(methodDefinition);
             }
         }
 
-        static MethodDefinition CreateMainImplementationForwardingMethod(AssemblyDefinition target, MethodDefinition method, TypeDefinition typeDefinition, MethodDefinition methodDefinition)
+        MethodDefinition CreateMainImplementationForwardingMethod(AssemblyDefinition target, MethodDefinition method, TypeDefinition typeDefinition)
         {
-            var implMethod = new MethodDefinition(method.Name /* + "__Impl"*/, method.Attributes & ~MethodAttributes.HasSecurity, methodDefinition.ReturnType);
+            var implMethod = new MethodDefinition(method.Name /* + "__Impl"*/, method.Attributes & ~MethodAttributes.HasSecurity, method.ReturnType);
+            implMethod.DeclaringType = typeDefinition;
+
+            foreach (var gp in method.GenericParameters)
+                implMethod.GenericParameters.Add(new GenericParameter(gp.Name, implMethod));
+
+            implMethod.ReturnType = ResolveType(target, method.DeclaringType, typeDefinition, method, implMethod, method.ReturnType);
+
             typeDefinition.Methods.Add(implMethod);
 
             #region Check and call local delegate field
-            foreach (var param in methodDefinition.Parameters)
-                implMethod.Parameters.Add(new ParameterDefinition(param.Name, param.Attributes, param.ParameterType));
+
+            foreach (var param in method.Parameters)
+            {
+                CopyParameter(target, method, typeDefinition, param, implMethod);
+            }
+
+            foreach (var customAttribute in method.CustomAttributes)
+            {
+                var attribute = CopyCustomAttribute(target, customAttribute);
+                if (attribute != null)
+                    implMethod.CustomAttributes.Add(attribute);
+            }
+
+            if (typeDefinition.IsInterface)
+                return implMethod;
 
             implMethod.Body = new MethodBody(implMethod);
 
@@ -182,12 +423,27 @@ namespace NSubstitute.Weaver
             return implMethod;
         }
 
+        void CopyParameter(AssemblyDefinition target, MethodDefinition method, TypeDefinition typeDefinition, ParameterDefinition parameter, MethodDefinition methodDefinition)
+        {
+            var parameterDefinition = new ParameterDefinition(parameter.Name, parameter.Attributes, ResolveType(target, method.DeclaringType, typeDefinition, method, methodDefinition, parameter.ParameterType));
+            if (parameter.HasFieldMarshal)
+                parameterDefinition.HasFieldMarshal = true;
+            if (parameter.HasMarshalInfo)
+                parameterDefinition.MarshalInfo = parameter.MarshalInfo;
+            if (parameter.HasConstant)
+            {
+                parameterDefinition.Constant = parameter.Constant;
+                parameterDefinition.HasConstant = true;
+            }
+            methodDefinition.Parameters.Add(parameterDefinition);
+        }
+
         // TODO: Finish the fake clone method, which is needed for inheritance hierarchies
         // When dealing with abstract or super types that create a modified version of a type, it is necessary for the wrapper to be able to
         // construct a new instance of the fake wrapped around the new type, but since we don't have access to enough information at the call-site,
         // we introduce a new clone method explicitly for this purpose.
         // For a typical use case, see TextWriter.Synchronized.
-        static MethodDefinition CreateFakeCloneMethod(AssemblyDefinition target, TypeDefinition type, TypeDefinition typeDefinition)
+        MethodDefinition CreateFakeCloneMethod(AssemblyDefinition target, TypeDefinition type, TypeDefinition typeDefinition)
         {
             var methodDefinition = new MethodDefinition("__FakeClone", MethodAttributes.Family | MethodAttributes.Virtual, typeDefinition);
             methodDefinition.Parameters.Add(new ParameterDefinition("fake", ParameterAttributes.None, target.MainModule.Import(type)));
@@ -200,7 +456,7 @@ namespace NSubstitute.Weaver
             return methodDefinition;
         }
 
-        static FieldDefinition CreateFakeField(AssemblyDefinition target, TypeDefinition type, TypeDefinition typeDefinition, MethodDefinition method)
+        FieldDefinition CreateFakeField(AssemblyDefinition target, TypeDefinition type, TypeDefinition typeDefinition, MethodDefinition method)
         {
             if (method.Name == ".ctor")
                 return null;
@@ -245,7 +501,7 @@ namespace NSubstitute.Weaver
             return fieldDefinition;
         }
 
-        static MethodDefinition CreateFakeForwardConstructor(AssemblyDefinition target, TypeDefinition type, TypeDefinition typeDefinition)
+        MethodDefinition CreateFakeForwardConstructor(AssemblyDefinition target, TypeDefinition type, TypeDefinition typeDefinition)
         {
             var method = new MethodDefinition(".ctor", MethodAttributes.Family | MethodAttributes.HideBySig | MethodAttributes.RTSpecialName | MethodAttributes.SpecialName, target.MainModule.Import(type.Module.GetType("System.Void")));
             var parameterDefinition = new ParameterDefinition("forward", ParameterAttributes.In, target.MainModule.Import(type));
@@ -262,12 +518,12 @@ namespace NSubstitute.Weaver
             return method;
         }
 
-        static FieldDefinition FakeForwardField(TypeDefinition typeDefinition)
+        FieldDefinition FakeForwardField(TypeDefinition typeDefinition)
         {
             return typeDefinition.Fields.Single(f => f.Name == k_FakeForward);
         }
 
-        static void CreateMainFakeMethodContents(AssemblyDefinition target, TypeDefinition type, MethodDefinition method, TypeDefinition typeDefinition, MethodDefinition methodDefinition, FieldDefinition fakeField, MethodDefinition implMethod)
+        void CreateMainFakeMethodContents(AssemblyDefinition target, TypeDefinition type, MethodDefinition method, TypeDefinition typeDefinition, MethodDefinition methodDefinition, FieldDefinition fakeField, MethodDefinition implMethod)
         {
             methodDefinition.Body = new MethodBody(methodDefinition);
 
@@ -291,7 +547,7 @@ namespace NSubstitute.Weaver
             methodDefinition.Body.Instructions.Add(ret);
         }
 
-        static void AddFakeFieldCallback(AssemblyDefinition target, MethodDefinition method,
+        void AddFakeFieldCallback(AssemblyDefinition target, MethodDefinition method,
             MethodDefinition methodDefinition, FieldDefinition fakeField, Instruction nop, Instruction ret)
         {
             if (method.IsStatic)
@@ -324,7 +580,7 @@ namespace NSubstitute.Weaver
             }
         }
 
-        static MethodReference ResolveGenericInvoke(AssemblyDefinition target, FieldDefinition fakeField)
+        MethodReference ResolveGenericInvoke(AssemblyDefinition target, FieldDefinition fakeField)
         {
             if (!fakeField.FieldType.IsGenericInstance)
                 return target.MainModule.Import(fakeField.FieldType.Resolve().Methods.Single(m => m.Name == "Invoke"));
@@ -349,7 +605,7 @@ namespace NSubstitute.Weaver
             return realInvoke;
         }
 
-        static void FillConstructor(AssemblyDefinition target, TypeDefinition type, MethodDefinition method, TypeDefinition typeDefinition, MethodDefinition methodDefinition)
+        void FillConstructor(AssemblyDefinition target, TypeDefinition type, MethodDefinition method, TypeDefinition typeDefinition, MethodDefinition methodDefinition)
         {
             methodDefinition.Body = new MethodBody(methodDefinition);
 
@@ -365,7 +621,7 @@ namespace NSubstitute.Weaver
             methodDefinition.Body.Instructions.Add(Instruction.Create(OpCodes.Ret));
         }
 
-        static void AddBaseTypeCtorCall(AssemblyDefinition target, TypeDefinition typeDefinition,
+        void AddBaseTypeCtorCall(AssemblyDefinition target, TypeDefinition typeDefinition,
             MethodDefinition methodDefinition)
         {
             if (typeDefinition.BaseType != null && !typeDefinition.IsValueType)
@@ -374,12 +630,12 @@ namespace NSubstitute.Weaver
                 var baseTypeCtor =
                     target.MainModule.Import(
                         typeDefinition.BaseType.Resolve()
-                        .Methods.Single(m => m.IsConstructor && m.Parameters.Count == 0));
+                        .Methods.Single(m => m.IsConstructor && m.Parameters.Count == 0 && !m.IsStatic));
                 methodDefinition.Body.Instructions.Add(Instruction.Create(OpCodes.Call, baseTypeCtor));
             }
         }
 
-        static TypeReference ResolveType(AssemblyDefinition target, TypeDefinition typeDefinition, TypeReference type)
+        TypeReference ResolveType(AssemblyDefinition target, TypeDefinition typeDefinition, TypeReference type)
         {
             //var typeDef = target.MainModule.Types.FirstOrDefault(t => t.FullName == prefixName + type.FullName);
             var typeDef = k_PrefixName + type.FullName == typeDefinition.FullName;
@@ -389,17 +645,44 @@ namespace NSubstitute.Weaver
             return target.MainModule.Import(type);
         }
 
-        static void CopyCustomAttributes(AssemblyDefinition target, TypeDefinition type, TypeDefinition typeDefinition)
+        CustomAttribute CopyCustomAttribute(AssemblyDefinition target, CustomAttribute customAttribute)
+        {
+            if (s_SecurityAttributes.Contains(customAttribute.AttributeType.FullName))
+                return null;
+
+            var attributeDefinition = customAttribute.AttributeType.Resolve();
+
+            if (!attributeDefinition.IsPublic)
+                return null;
+
+            var customAttributeConstructor = customAttribute.Constructor.Resolve();
+
+            var targetAttributeType = target.MainModule.GetType(attributeDefinition.FullName);
+            if (targetAttributeType != null)
+            {
+                customAttributeConstructor = targetAttributeType.Methods.Single(m => m.FullName == customAttributeConstructor.FullName);
+            }
+
+            var attribute = new CustomAttribute(target.MainModule.Import(customAttributeConstructor));
+            foreach (var arg in customAttribute.ConstructorArguments)
+            {
+                var targetArgType = target.MainModule.GetType(arg.Type.FullName);
+                var attributeArgType = targetArgType ?? arg.Type;
+
+                attribute.ConstructorArguments.Add(new CustomAttributeArgument(
+                    target.MainModule.Import(attributeArgType.Resolve()), arg.Value));
+            }
+
+            return attribute;
+        }
+
+        internal void CopyCustomAttributes(AssemblyDefinition target, TypeDefinition type, TypeDefinition typeDefinition)
         {
             foreach (var customAttribute in type.CustomAttributes)
             {
-                if (!customAttribute.AttributeType.Resolve().IsPublic)
+                var attribute = CopyCustomAttribute(target, customAttribute);
+                if (attribute == null)
                     continue;
-
-                var attribute = new CustomAttribute(target.MainModule.Import(customAttribute.Constructor.Resolve()));
-                foreach (var arg in customAttribute.ConstructorArguments)
-                    attribute.ConstructorArguments.Add(new CustomAttributeArgument(
-                            target.MainModule.Import(arg.Type.Resolve()), arg.Value));
 
                 typeDefinition.CustomAttributes.Add(attribute);
             }
