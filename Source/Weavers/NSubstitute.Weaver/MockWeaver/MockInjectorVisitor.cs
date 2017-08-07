@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Linq;
 using Mono.Cecil;
@@ -8,6 +8,7 @@ using Unity.Cecil.Visitor;
 
 namespace NSubstitute.Weaver
 {
+    // TODO: Figure out what to do with signed assemblies
     class MockInjectorVisitor : Visitor
     {
         readonly MethodDefinition m_HookForInstance;
@@ -183,6 +184,10 @@ namespace NSubstitute.Weaver
                     cloneParameter.HasConstant = parameter.HasConstant;
                     cloneParameter.Constant = parameter.Constant;
                 }
+                if (parameter.HasFieldMarshal)
+                    cloneParameter.HasFieldMarshal = true;
+                if (parameter.HasMarshalInfo)
+                    cloneParameter.MarshalInfo = parameter.MarshalInfo;
 
                 methodCopy.Parameters.Add(cloneParameter);
             }
@@ -397,13 +402,24 @@ namespace NSubstitute.Weaver
             if (!type.IsGenericParameter)
                 return type;
 
+            if (targetMethod.GenericParameters.Count(p => p.Name == type.Name) > 1)
+            {
+                System.Diagnostics.Debugger.Launch();
+                throw new NotImplementedException($"{type} {targetMethod} {targetMethod.GenericParameters}");
+            }
+
             var genericParameter = targetMethod.GenericParameters.SingleOrDefault(p => p.Name == type.Name);
             if (genericParameter != null)
                 return genericParameter;
 
-            return targetMethod.DeclaringType.HasGenericParameters
+            var rv = targetMethod.DeclaringType.HasGenericParameters
                 ? targetMethod.DeclaringType.GenericParameters.Single(p => p.Name == type.Name)
                 : null;
+
+            if (rv == null)
+                throw new NotImplementedException($"{type} {targetMethod} {rv}");
+
+            return rv;
         }
     }
 }

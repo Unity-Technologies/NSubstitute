@@ -18,6 +18,7 @@ namespace NSubstitute.Weaver.MscorlibWeaver.MscorlibWrapper
         static MethodDefinition s_FakeForwardConstructor;
         static MethodDefinition s_FakeCloneMethod;
         static string[] s_SecurityAttributes = { "System.Security.SecurityCriticalAttribute", "System.Security.SuppressUnmanagedCodeSecurityAttribute" };
+        Dictionary<string, MethodDefinition> m_ForwardConstructors = new Dictionary<string, MethodDefinition>();
 
         public Copier(ProcessTypeResolver processTypeResolver)
         {
@@ -32,7 +33,7 @@ namespace NSubstitute.Weaver.MscorlibWeaver.MscorlibWrapper
             // Note that this functionality is not currently in use, but could prove useful for a later stage,
             // and rather than extracting the logic now, it is better to design it for this purpose up front.
 
-            var reservedNames = new List<string> { "<PrivateImplementationDetails>", "<Module>", "System.Void" };
+            var reservedNames = new List<string> { "<PrivateImplementationDetails>", "<Module>", "System.Void", "System.Object", "System.Boolean", "System.String", "System.Int32" };
 
             foreach (var type in typeDefinitions.Where(t => reservedNames.IndexOf(t.FullName) == -1))
             {
@@ -56,8 +57,8 @@ namespace NSubstitute.Weaver.MscorlibWeaver.MscorlibWrapper
                 CopyTypeMembers(target, type, typeDefinition);
             }
 
-            var visitor = new MockInjectorVisitor(nsubstitute, target.MainModule);
-            target.Accept(visitor);
+            //var visitor = new MockInjectorVisitor(nsubstitute, target.MainModule);
+            //target.Accept(visitor);
         }
 
         static int InheritanceHierarchySize(TypeReference typeDefinition)
@@ -80,8 +81,6 @@ namespace NSubstitute.Weaver.MscorlibWeaver.MscorlibWrapper
                 CopyEnumValues(target, type, typeDefinition);
                 return;
             }
-
-            CreateFakeFieldForward(target, type, typeDefinition);
 
             CopyMethods(target, type, typeDefinition);
             CopyProperties(target, type, typeDefinition);
@@ -119,6 +118,7 @@ namespace NSubstitute.Weaver.MscorlibWeaver.MscorlibWrapper
             typeDefinition.Methods.Add(methodDefinition);
 
             AddBaseTypeCtorCall(target, typeDefinition, methodDefinition);
+            methodDefinition.Body.Instructions.Add(Instruction.Create(OpCodes.Ret));
         }
 
         void CopyProperties(AssemblyDefinition target, TypeDefinition type, TypeDefinition typeDefinition)
@@ -159,9 +159,6 @@ namespace NSubstitute.Weaver.MscorlibWeaver.MscorlibWrapper
 
         void CreateFakeFieldForward(AssemblyDefinition target, TypeDefinition type, TypeDefinition typeDefinition)
         {
-            if (type.IsInterface)
-                return;
-
             var field = new FieldDefinition(k_FakeForward, FieldAttributes.Assembly, target.MainModule.Import(type));
             typeDefinition.Fields.Add(field);
         }
@@ -200,6 +197,9 @@ namespace NSubstitute.Weaver.MscorlibWeaver.MscorlibWrapper
 
         void CreateTypeShim(AssemblyDefinition target, TypeDefinition type)
         {
+            if (!type.IsPublic)
+                return;
+
             if (type.BaseType?.FullName == "System.MulticastDelegate" || type.BaseType?.FullName == "System.Delegate")
                 return; // skip delegates
 
@@ -211,12 +211,46 @@ namespace NSubstitute.Weaver.MscorlibWeaver.MscorlibWrapper
                     typeDefinition.GenericParameters.Add(new GenericParameter(gp.Name, typeDefinition));
             }
 
+            typeDefinition.BaseType = RecursivelyInstantiateAndImportTypeRefence(target, type.BaseType, type, typeDefinition);
+
+            if (type.IsInterface || type.IsAbstract)
+            {
+                var fakeForwardTypeImpl = new TypeDefinition(typeDefinition.Namespace, $"FakeForward{typeDefinition.Name}", TypeAttributes.Public | TypeAttributes.Class);
+
+                foreach (var gp in type.GenericParameters)
+                    fakeForwardTypeImpl.GenericParameters.Add(new GenericParameter(gp.Name, fakeForwardTypeImpl));
+
+                if (type.IsInterface)
+                    fakeForwardTypeImpl.Interfaces.Add(typeDefinition.HasGenericParameters ? (TypeReference)typeDefinition.MakeGenericInstanceType(fakeForwardTypeImpl.GenericParameters.ToArray()) : typeDefinition);
+                else if (type.IsAbstract)
+                    fakeForwardTypeImpl.BaseType = RecursivelyInstantiateAndImportTypeRefence(target, type, type, fakeForwardTypeImpl);
+                CreateFakeFieldForward(target, type, fakeForwardTypeImpl);
+
+                var forwardConstructor = CreateFakeForwardConstructor(target, type, fakeForwardTypeImpl);
+                m_ForwardConstructors[typeDefinition.FullName] = forwardConstructor;
+                target.MainModule.Types.Add(fakeForwardTypeImpl);
+            }
+            else
+            {
+                CreateFakeFieldForward(target, type, typeDefinition);
+                var forwardConstructor = CreateFakeForwardConstructor(target, type, typeDefinition);
+                if (type.IsAbstract)
+                {
+                    forwardConstructor.Attributes &= ~MethodAttributes.Public;
+                    forwardConstructor.Attributes |= MethodAttributes.FamORAssem;
+                }
+                m_ForwardConstructors[typeDefinition.FullName] = forwardConstructor;
+            }
+
             target.MainModule.Types.Add(typeDefinition);
         }
 
 
         public TypeDefinition CopyType(AssemblyDefinition target, TypeDefinition type)
         {
+            if (!type.IsPublic)
+                return null;
+
             //var typeDefinition = new TypeDefinition(type.Namespace == "" ? k_PrefixNameRaw : k_PrefixName + type.Namespace, type.Name, type.Attributes & ~TypeAttributes.HasSecurity);
             var typeDefinition = target.MainModule.Types.SingleOrDefault(t => t.FullName == $"{(type.Namespace == "" ? k_PrefixNameRaw : k_PrefixName + type.Namespace)}.{type.Name}");
             if (typeDefinition == null)
@@ -303,7 +337,7 @@ namespace NSubstitute.Weaver.MscorlibWeaver.MscorlibWrapper
             {
                 if (!type.IsAbstract)
                 {
-                    s_FakeForwardConstructor = CreateFakeForwardConstructor(target, type, typeDefinition);
+                    s_FakeForwardConstructor = m_ForwardConstructors[typeDefinition.FullName];
                     s_FakeCloneMethod = null;
                 }
                 else
@@ -355,7 +389,7 @@ namespace NSubstitute.Weaver.MscorlibWeaver.MscorlibWrapper
 
         MethodDefinition CreateMainImplementationForwardingMethod(AssemblyDefinition target, MethodDefinition method, TypeDefinition typeDefinition)
         {
-            var implMethod = new MethodDefinition(method.Name /* + "__Impl"*/, method.Attributes & ~MethodAttributes.HasSecurity, method.ReturnType);
+            var implMethod = new MethodDefinition(method.Name /* + "__Impl"*/, method.Attributes & ~MethodAttributes.HasSecurity & ~MethodAttributes.PInvokeImpl, method.ReturnType);
             implMethod.DeclaringType = typeDefinition;
 
             foreach (var gp in method.GenericParameters)
@@ -408,14 +442,55 @@ namespace NSubstitute.Weaver.MscorlibWeaver.MscorlibWrapper
                 implMethod.Body.Instructions.Add(Instruction.Create(OpCodes.Callvirt, target.MainModule.Import(method)));
             else
                 implMethod.Body.Instructions.Add(Instruction.Create(OpCodes.Call, target.MainModule.Import(method))); // this.__fake__forward.<Method>(arguments)
-            if (implMethod.ReturnType.FullName == typeDefinition.FullName)
+
+            if (method.ReturnType != method.Module.TypeSystem.Void)
             {
-                implMethod.Body.Instructions.Add(s_FakeForwardConstructor != null
-                    ? Instruction.Create(OpCodes.Newobj, s_FakeForwardConstructor)
-                    : Instruction.Create(OpCodes.Callvirt, s_FakeCloneMethod));
-                implMethod.Body.Instructions.Add(Instruction.Create(OpCodes.Ret));
-                return implMethod;
+                implMethod.Body.Instructions.Add(Instruction.Create(OpCodes.Stloc_0));
+                implMethod.Body.Instructions.Add(Instruction.Create(OpCodes.Ldloc_0));
+
+                if (implMethod.ReturnType.IsArray)
+                {
+                    var branchNotNull = Instruction.Create(OpCodes.Ldloc_0);
+                    implMethod.Body.Instructions.Add(Instruction.Create(OpCodes.Brtrue_S, branchNotNull));
+                    implMethod.Body.Instructions.Add(Instruction.Create(OpCodes.Ldnull));
+                    implMethod.Body.Instructions.Add(Instruction.Create(OpCodes.Ret));
+                    implMethod.Body.Instructions.Add(branchNotNull);
+                    implMethod.Body.Instructions.Add(Instruction.Create(OpCodes.Ldlen));
+                    implMethod.Body.Instructions.Add(Instruction.Create(OpCodes.Conv_I4));
+                    implMethod.Body.Instructions.Add(Instruction.Create(OpCodes.Newarr, implMethod.ReturnType));
+                }
+                else
+                {
+                    if (implMethod.ReturnType.FullName != method.ReturnType.FullName)
+                    {
+                        var lookup = implMethod.ReturnType.FullName;
+                        if (implMethod.ReturnType.IsGenericInstance)
+                        {
+                            lookup = implMethod.ReturnType.Resolve().FullName;
+                        }
+                        var ctor = m_ForwardConstructors[lookup];
+                        if (implMethod.ReturnType.IsGenericInstance)
+                        {
+                            var instance = (GenericInstanceType)implMethod.ReturnType;
+                            
+                        }
+
+                        implMethod.Body.Instructions.Add(Instruction.Create(OpCodes.Newobj, ctor));
+                    }
+                }
             }
+
+            //var fakeReturnType = target.MainModule.Types.FirstOrDefault(t => t.FullName == implMethod.ReturnType.FullName);
+            //if (fakeReturnType != null)
+            //{
+            //    var forwardConstructor = fakeReturnType.GetConstructors().SingleOrDefault(c => c.Parameters.Count == 1 && c.Parameters[0].ParameterType.FullName == fakeReturnType.FullName.Substring(5));
+
+            //    implMethod.Body.Instructions.Add(forwardConstructor != null
+            //        ? Instruction.Create(OpCodes.Newobj, forwardConstructor)
+            //        : Instruction.Create(OpCodes.Callvirt, s_FakeCloneMethod));
+            //    implMethod.Body.Instructions.Add(Instruction.Create(OpCodes.Ret));
+            //    return implMethod;
+            //}
 
             implMethod.Body.Instructions.Add(Instruction.Create(OpCodes.Ret));
             #endregion
@@ -503,7 +578,7 @@ namespace NSubstitute.Weaver.MscorlibWeaver.MscorlibWrapper
 
         MethodDefinition CreateFakeForwardConstructor(AssemblyDefinition target, TypeDefinition type, TypeDefinition typeDefinition)
         {
-            var method = new MethodDefinition(".ctor", MethodAttributes.Family | MethodAttributes.HideBySig | MethodAttributes.RTSpecialName | MethodAttributes.SpecialName, target.MainModule.Import(type.Module.GetType("System.Void")));
+            var method = new MethodDefinition(".ctor", MethodAttributes.Family | MethodAttributes.HideBySig | MethodAttributes.RTSpecialName | MethodAttributes.SpecialName, target.MainModule.Import(type.Module.TypeSystem.Void));
             var parameterDefinition = new ParameterDefinition("forward", ParameterAttributes.In, target.MainModule.Import(type));
             method.Parameters.Add(parameterDefinition);
 
@@ -511,7 +586,7 @@ namespace NSubstitute.Weaver.MscorlibWeaver.MscorlibWrapper
             AddBaseTypeCtorCall(target, typeDefinition, method);
             method.Body.Instructions.Add(Instruction.Create(OpCodes.Ldarg_0)); // this
             method.Body.Instructions.Add(Instruction.Create(OpCodes.Ldarg, parameterDefinition)); // forward
-            method.Body.Instructions.Add(Instruction.Create(OpCodes.Stfld, (FieldReference)FakeForwardField(typeDefinition))); // this.__fake_forward = forward
+            method.Body.Instructions.Add(Instruction.Create(OpCodes.Stfld, FakeForwardField(typeDefinition))); // this.__fake_forward = forward
             method.Body.Instructions.Add(Instruction.Create(OpCodes.Ret));
 
             typeDefinition.Methods.Add(method);
@@ -632,6 +707,11 @@ namespace NSubstitute.Weaver.MscorlibWeaver.MscorlibWrapper
                         typeDefinition.BaseType.Resolve()
                         .Methods.Single(m => m.IsConstructor && m.Parameters.Count == 0 && !m.IsStatic));
                 methodDefinition.Body.Instructions.Add(Instruction.Create(OpCodes.Call, baseTypeCtor));
+            }
+            else if (typeDefinition.BaseType == null)
+            {
+                methodDefinition.Body.Instructions.Add(Instruction.Create(OpCodes.Ldarg_0));
+                methodDefinition.Body.Instructions.Add(Instruction.Create(OpCodes.Call, target.MainModule.TypeSystem.Object));
             }
         }
 
