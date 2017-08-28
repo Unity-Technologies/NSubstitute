@@ -322,7 +322,7 @@ class C {
                 (t, o) => null);
         }
 
-        [TestCase("class C { public delegate void SímpleDelegate(); }", TestName = "Simple")]
+        [TestCase("class C { public delegate void SimpleDelegate(); }", TestName = "Simple")]
         [TestCase("class C { public delegate T GenericDelegate<T>(); }", TestName = "Generic")]
         public void WillNotPatchDelegates(string source)
         {
