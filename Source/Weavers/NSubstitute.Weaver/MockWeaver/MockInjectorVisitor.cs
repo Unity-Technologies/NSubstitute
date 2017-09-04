@@ -50,19 +50,25 @@ namespace NSubstitute.Weaver
             if (typeDefinition.IsInterface)
                 return;
 
-            m_Processed.Clear();
-
-            m_InjectedMethods.Push(new List<MethodDefinition>());
-            base.Visit(typeDefinition, context);
-            var injectedMethods = m_InjectedMethods.Pop();
-            foreach (var method in injectedMethods)
+            try
             {
-                typeDefinition.Methods.Add(method);
+                m_Processed.Clear();
+                m_InjectedMethods.Push(new List<MethodDefinition>());
+
+                // this will decompose the type and call Visit() on all its elements (fields, methods, etc.)
+                base.Visit(typeDefinition, context);
+
+                var injectedMethods = m_InjectedMethods.Pop();
+                foreach (var method in injectedMethods)
+                    typeDefinition.Methods.Add(method);
+
+                InjectMockingFields(typeDefinition, injectedMethods);
+                EnsureTypeHasEmptyDefaultCtor(typeDefinition, injectedMethods);
             }
-
-            InjectMockingFields(typeDefinition, injectedMethods);
-
-            EnsureTypeHasEmptyDefaultCtor(typeDefinition, injectedMethods);
+            catch (Exception e)
+            {
+                throw new Exception($"Internal error during mock injection into type {typeDefinition.FullName}", e);
+            }
         }
 
         static void EnsureTypeHasEmptyDefaultCtor(TypeDefinition typeDefinition, List<MethodDefinition> injectedMethods)
