@@ -1,7 +1,10 @@
 using System;
+using System.Collections.Generic;
+using System.Linq;
 using System.Reflection;
 using Mono.Cecil;
 using Mono.Cecil.Cil;
+using Mono.Collections.Generic;
 
 namespace Unity.Cecil.Visitor
 {
@@ -254,9 +257,42 @@ namespace Unity.Cecil.Visitor
 
         protected virtual void Visit(ModuleDefinition moduleDefinition, Context context)
         {
+            var searchedDefinitions = new Dictionary<string, bool>();
             foreach (var typeDefinition in moduleDefinition.Types)
+            {
+                VisitBase(typeDefinition, moduleDefinition.Types, context.Member(moduleDefinition), searchedDefinitions);
+            }
+        }
 
-                Visit(typeDefinition, context.Member(moduleDefinition));
+        /// <summary>
+        /// We recursively go down the inheritance path, until we reach a type definition without a base class.
+        /// Type definitions in the "System." packages are not considered.
+        /// </summary>
+        /// <param name="typeDefinition">Current head in the visitor pattern path.</param>
+        /// <param name="moduleDefinitionTypes">Collection used to locate the base type definition.</param>
+        /// <param name="context">Context to be passed to <code>Visit(TypeDefinition, Context)</code>.</param>
+        /// <param name="searchedDefinitions"><code>Dictionary</code> used to avoid more than one processing of the same type.</param>
+        protected virtual void VisitBase(TypeDefinition typeDefinition,
+            Collection<TypeDefinition> moduleDefinitionTypes, Context context,
+            Dictionary<string, bool> searchedDefinitions)
+        {
+            if (searchedDefinitions.ContainsKey(typeDefinition.FullName))
+            {
+                return;
+            }
+
+            if (typeDefinition.BaseType != null && !searchedDefinitions.ContainsKey(typeDefinition.BaseType.FullName)
+                && !typeDefinition.BaseType.FullName.StartsWith("System"))
+            {
+                var baseType = moduleDefinitionTypes.FirstOrDefault(definition =>
+                    definition.FullName.Equals(typeDefinition.BaseType.FullName));
+                if (baseType != default(TypeDefinition))
+                {
+                    VisitBase(baseType, moduleDefinitionTypes, context, searchedDefinitions);
+                }
+            }
+            searchedDefinitions.Add(typeDefinition.FullName, true);
+            Visit(typeDefinition, context);
         }
 
         protected virtual void Visit(TypeDefinition typeDefinition, Context context)
