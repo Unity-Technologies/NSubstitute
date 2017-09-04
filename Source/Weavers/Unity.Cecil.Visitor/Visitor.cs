@@ -86,10 +86,12 @@ namespace Unity.Cecil.Visitor
             return new Context(Role.Interface, data, this);
         }
 
+#if NO // why?? need new cecil?
         public Context InterfaceType(InterfaceImplementation data)
         {
             return new Context(Role.InterfaceType, data, this);
         }
+#endif
 
         public Context ReturnType(object data)
         {
@@ -253,6 +255,7 @@ namespace Unity.Cecil.Visitor
         protected virtual void Visit(ModuleDefinition moduleDefinition, Context context)
         {
             foreach (var typeDefinition in moduleDefinition.Types)
+
                 Visit(typeDefinition, context.Member(moduleDefinition));
         }
 
@@ -260,7 +263,6 @@ namespace Unity.Cecil.Visitor
         {
             if (typeDefinition.BaseType != null)
                 VisitTypeReference(typeDefinition.BaseType, context.BaseType(typeDefinition));
-
             foreach (var customAttribute in typeDefinition.CustomAttributes)
                 Visit(customAttribute, context.Attribute(typeDefinition));
 
@@ -586,6 +588,7 @@ namespace Unity.Cecil.Visitor
             Visit(typeReference, context);
         }
 
+#if NO // why?? need new cecil?
         protected virtual void Visit(InterfaceImplementation interfaceImpl, Context context)
         {
             VisitTypeReference(interfaceImpl.InterfaceType, context.InterfaceType(interfaceImpl));
@@ -593,5 +596,6 @@ namespace Unity.Cecil.Visitor
             foreach (var customAttribute in interfaceImpl.CustomAttributes)
                 Visit(customAttribute, context.Attribute(interfaceImpl));
         }
+#endif
     }
 }
