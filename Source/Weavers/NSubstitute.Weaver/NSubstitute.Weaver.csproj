@@ -35,7 +35,11 @@
     <Compile Include="MscorlibWeaver\CallSiteWeaver\Resolver.cs" />
     <Compile Include="CecilExtensions.cs" />
     <Compile Include="MscorlibWeaver\MscorlibWrapper\Copier.cs" />
+    <Compile Include="MscorlibWeaver\MscorlibWrapper\CopierNg.cs" />
+    <Compile Include="MscorlibWeaver\MscorlibWrapper\IAssemblyDefinitionReader.cs" />
+    <Compile Include="MscorlibWeaver\MscorlibWrapper\ICopier.cs" />
     <Compile Include="MscorlibWeaver\MscorlibWrapper\ProcessTypeResolver.cs" />
+    <Compile Include="MscorlibWeaver\MscorlibWrapper\ReferenceRewriter.cs" />
     <Compile Include="MscorlibWeaver\MscorlibWrapper\Wrapper.cs" />
     <Compile Include="MockWeaver\MockInjectorVisitor.cs" />
     <Compile Include="Properties\AssemblyInfo.cs" />

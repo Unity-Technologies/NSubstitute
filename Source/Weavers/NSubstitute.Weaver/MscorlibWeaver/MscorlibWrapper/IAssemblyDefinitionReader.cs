@@ -1,5 +1,4 @@
-﻿using System;
-using Mono.Cecil;
+﻿using Mono.Cecil;
 
 namespace NSubstitute.Weaver.MscorlibWeaver.MscorlibWrapper
 {

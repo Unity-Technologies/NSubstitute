@@ -9,7 +9,7 @@ using Unity.Cecil.Visitor;
 
 namespace NSubstitute.Weaver.MscorlibWeaver.MscorlibWrapper
 {
-    class Copier : ICopier
+    class Copier2 : ICopier
     {
         readonly ProcessTypeResolver m_ProcessTypeResolver;
         const string k_PrefixName = "Fake.";
@@ -20,7 +20,7 @@ namespace NSubstitute.Weaver.MscorlibWeaver.MscorlibWrapper
         static string[] s_SecurityAttributes = { "System.Security.SecurityCriticalAttribute", "System.Security.SuppressUnmanagedCodeSecurityAttribute" };
         Dictionary<string, MethodDefinition> m_ForwardConstructors = new Dictionary<string, MethodDefinition>();
 
-        public Copier(ProcessTypeResolver processTypeResolver)
+        public Copier2(ProcessTypeResolver processTypeResolver)
         {
             m_ProcessTypeResolver = processTypeResolver;
         }
@@ -203,6 +203,9 @@ namespace NSubstitute.Weaver.MscorlibWeaver.MscorlibWrapper
             if (type.BaseType?.FullName == "System.MulticastDelegate" || type.BaseType?.FullName == "System.Delegate")
                 return; // skip delegates
 
+            if (type.IsEnum)
+                return; // skip enums
+
             var typeDefinition = new TypeDefinition(type.Namespace == "" ? k_PrefixNameRaw : k_PrefixName + type.Namespace, type.Name, type.Attributes & ~TypeAttributes.HasSecurity);
 
             if (type.HasGenericParameters)
@@ -211,7 +214,7 @@ namespace NSubstitute.Weaver.MscorlibWeaver.MscorlibWrapper
                     typeDefinition.GenericParameters.Add(new GenericParameter(gp.Name, typeDefinition));
             }
 
-            typeDefinition.BaseType = RecursivelyInstantiateAndImportTypeRefence(target, type.BaseType, type, typeDefinition);
+            typeDefinition.BaseType = type.BaseType == null ? null : RecursivelyInstantiateAndImportTypeRefence(target, type.BaseType, type, typeDefinition);
 
             if (type.IsInterface || type.IsAbstract)
             {
@@ -223,7 +226,7 @@ namespace NSubstitute.Weaver.MscorlibWeaver.MscorlibWrapper
                 if (type.IsInterface)
                     fakeForwardTypeImpl.Interfaces.Add(typeDefinition.HasGenericParameters ? (TypeReference)typeDefinition.MakeGenericInstanceType(fakeForwardTypeImpl.GenericParameters.ToArray()) : typeDefinition);
                 else if (type.IsAbstract)
-                    fakeForwardTypeImpl.BaseType = RecursivelyInstantiateAndImportTypeRefence(target, type, type, fakeForwardTypeImpl);
+                    fakeForwardTypeImpl.BaseType = type.BaseType == null ? null : RecursivelyInstantiateAndImportTypeRefence(target, type, type, fakeForwardTypeImpl);
                 CreateFakeFieldForward(target, type, fakeForwardTypeImpl);
 
                 var forwardConstructor = CreateFakeForwardConstructor(target, type, fakeForwardTypeImpl);
@@ -379,6 +382,8 @@ namespace NSubstitute.Weaver.MscorlibWeaver.MscorlibWrapper
                     }
 
                     FillConstructor(target, type, method, typeDefinition, methodDefinition);
+
+                    typeDefinition.Methods.Add(methodDefinition);
                 }
                 else
                 {
@@ -417,6 +422,9 @@ namespace NSubstitute.Weaver.MscorlibWeaver.MscorlibWrapper
                 return implMethod;
 
             implMethod.Body = new MethodBody(implMethod);
+
+            implMethod.Body.Variables.Add(new VariableDefinition(target.MainModule.Import(method.ReturnType)));
+            implMethod.Body.InitLocals = true;
 
             if (implMethod.ReturnType.FullName == typeDefinition.FullName && s_FakeForwardConstructor == null)
                 implMethod.Body.Instructions.Add(Instruction.Create(OpCodes.Ldarg_0));
@@ -711,7 +719,7 @@ namespace NSubstitute.Weaver.MscorlibWeaver.MscorlibWrapper
             else if (typeDefinition.BaseType == null)
             {
                 methodDefinition.Body.Instructions.Add(Instruction.Create(OpCodes.Ldarg_0));
-                methodDefinition.Body.Instructions.Add(Instruction.Create(OpCodes.Call, target.MainModule.TypeSystem.Object));
+                methodDefinition.Body.Instructions.Add(Instruction.Create(OpCodes.Call, target.MainModule.Import(target.MainModule.TypeSystem.Object.Resolve().GetConstructors().Single(c => c.IsPublic && c.Parameters.Count == 0))));
             }
         }
 
