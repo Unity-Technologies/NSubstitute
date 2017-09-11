@@ -1,3 +1,6 @@
+# Ensure eol normalization
+* text=auto
+
 # These files are text and should be normalized (convert crlf => lf)
 *.cs      text diff=csharp
 *.xaml    text
