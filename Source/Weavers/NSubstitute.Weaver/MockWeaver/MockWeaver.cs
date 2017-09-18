@@ -12,9 +12,7 @@ namespace NSubstitute.Weaver
         {
             using (var sourceAssemblyFile = File.OpenRead(assemblyToPatchPath))
             {
-                var outputAssemblyPath = Path.Combine(Path.Combine(Path.GetDirectoryName(assemblyToPatchPath), "Patched"), Path.GetFileName(assemblyToPatchPath));
-                Directory.CreateDirectory(Path.GetDirectoryName(outputAssemblyPath));
-
+                var outputAssemblyPath = Path.GetFileName(assemblyToPatchPath) + ".patched";
                 InjectFakes(sourceAssemblyFile, outputAssemblyPath, nsubstituteAssemblyPath, Path.GetDirectoryName(assemblyToPatchPath));
             }
         }
