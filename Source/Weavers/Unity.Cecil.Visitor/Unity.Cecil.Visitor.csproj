@@ -12,6 +12,7 @@
   </PropertyGroup>
   <ItemGroup>
     <Compile Include="Extensions.cs" />
+    <Compile Include="TypeReferenceExtensions.cs" />
     <Compile Include="Visitor.cs" />
   </ItemGroup>
   <ItemGroup>

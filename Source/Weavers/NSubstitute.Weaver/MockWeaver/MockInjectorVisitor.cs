@@ -96,10 +96,7 @@ namespace NSubstitute.Weaver
                 ctor = ctors.First();
                 if (ctor.Body == null)
                 {
-                    var methodDefinition = new MethodDefinition(".ctor",
-                        MethodAttributes.Public | MethodAttributes.RTSpecialName | MethodAttributes.SpecialName |
-                        MethodAttributes.HideBySig, typeDefinition.Module.TypeSystem.Void);
-                    ctor.Body = new MethodBody(methodDefinition);
+                    ctor.Body = new MethodBody(ctor);
                 }
                 ctor.IsPublic = true;
             }
