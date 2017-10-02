@@ -52,6 +52,11 @@ namespace NSubstitute.Weaver.MscorlibWeaver.MscorlibWrapper
 
                 typeDefinition.Properties.Add(propertyDefinition);
             }
+
+            for (var i = 0; i < type.NestedTypes.Count; ++i)
+            {
+                AttachBaseTypeAndFakeForwardProperties(target, type.NestedTypes[i], typeDefinition.NestedTypes[i], implementationTypes);
+            }
         }
 
         void AttachMethodOverridesForExplicitInterfaceImplementationsThatHaveBeenFaked(AssemblyDefinition target, TypeDefinition type, TypeDefinition typeDefinition, Dictionary<MethodDefinition, MethodDefinition> methodMap, Dictionary<string, TypeDefinition> implementationTypes)
@@ -68,9 +73,17 @@ namespace NSubstitute.Weaver.MscorlibWeaver.MscorlibWrapper
 
                 foreach (var methodOverride in method.Overrides)
                 {
+                    if (ShouldSkip(methodOverride.DeclaringType.Resolve()))
+                        continue;
+
                     var overrideMethod = rewriter.Rewrite(target, type, typeDefinition, method, methodDefinition, methodOverride, methodMap);
                     methodDefinition.Overrides.Add(overrideMethod);
                 }
+            }
+
+            for (var i = 0; i < type.NestedTypes.Count; ++i)
+            {
+                AttachMethodOverridesForExplicitInterfaceImplementationsThatHaveBeenFaked(target, type.NestedTypes[i], typeDefinition.NestedTypes[i], methodMap, implementationTypes);
             }
         }
 
@@ -82,6 +95,11 @@ namespace NSubstitute.Weaver.MscorlibWeaver.MscorlibWrapper
             if (implementationTypes.TryGetValue(typeDefinition.FullName, out TypeDefinition implType))
                 foreach (var prop in implType.Properties.Where(p => p.Name.Contains(k_FakeForwardPropertyNamePrefix)))
                     implType.Methods.Add(prop.GetMethod);
+
+            for (var i = 0; i < type.NestedTypes.Count; ++i)
+            {
+                PostprocessFakeImplementations(target, type.NestedTypes[i], typeDefinition.NestedTypes[i], implementationTypes);
+            }
         }
 
         void AttachMethods(AssemblyDefinition target, TypeDefinition type, TypeDefinition typeDefinition, Dictionary<string, TypeDefinition> implementationTypes, Dictionary<MethodDefinition, MethodDefinition> methodMap)
@@ -133,6 +151,11 @@ namespace NSubstitute.Weaver.MscorlibWeaver.MscorlibWrapper
 
                     implementationDefinition.Methods.Add(implMethodDefinition);
                 }
+            }
+
+            for (var i = 0; i < type.NestedTypes.Count; ++i)
+            {
+                AttachMethods(target, type.NestedTypes[i], typeDefinition.NestedTypes[i], implementationTypes, methodMap);
             }
         }
 
@@ -241,8 +264,11 @@ namespace NSubstitute.Weaver.MscorlibWeaver.MscorlibWrapper
         MethodReference RewriteMethodReference(AssemblyDefinition target, TypeDefinition type, TypeDefinition typeDefinition, MethodDefinition method, MethodDefinition methodDefinition, MethodDefinition methodReference, Dictionary<MethodDefinition, MethodDefinition> methodMap, bool importFinalReference = true)
         {
             var reference = (MethodReference)methodReference;
-            if (methodReference.HasOverrides)
+            if (methodReference.HasOverrides && !methodReference.IsPublic)
+            {
                 reference = methodReference.Overrides[0];
+                return RewriteMethodReference(target, type, typeDefinition, method, methodDefinition, reference.Resolve(), methodMap);
+            }
 
             return rewriter.Reinstantiate(target, type, typeDefinition, method, methodDefinition, methodReference, methodMap); // TODO reference
         }
@@ -271,6 +297,11 @@ namespace NSubstitute.Weaver.MscorlibWeaver.MscorlibWrapper
             foreach (var iface in type.Interfaces)
             {
                 typeDefinition.Interfaces.Add(RewriteTypeReference(target, type, typeDefinition, null, null, iface, null));
+            }
+
+            for (var i = 0; i < type.NestedTypes.Count; ++i)
+            {
+                AttachInterfaces(target, type.NestedTypes[i], typeDefinition.NestedTypes[i]);
             }
         }
 
@@ -326,6 +357,11 @@ namespace NSubstitute.Weaver.MscorlibWeaver.MscorlibWrapper
                 foreach (var constraint in originalGenericParameter.Constraints)
                     definitionGenericParameter.Constraints.Add(RewriteTypeReference(target, type, typeDefinition, null, null, constraint, null));
             }
+
+            for (var i = 0; i < type.NestedTypes.Count; ++i)
+            {
+                AttachGenericTypeConstraints(target, type.NestedTypes[i], typeDefinition.NestedTypes[i]);
+            }
         }
 
         TypeReference MakeGenericInstanceTypeIfNecessary(AssemblyDefinition target, TypeReference typeReference, TypeDefinition type, TypeDefinition typeDefinition)
@@ -371,6 +407,8 @@ namespace NSubstitute.Weaver.MscorlibWeaver.MscorlibWrapper
                 typeDefinition.GenericParameters.Add(new GenericParameter(gp.Name, typeDefinition));
             }
 
+            CreateNestedTypes(target, type, typeDefinition);
+
             target.MainModule.Types.Add(typeDefinition);
 
             //typeDefinition.BaseType = RewriteTypeReference(target, type, typeDefinition, null, null, type.BaseType);
@@ -399,11 +437,32 @@ namespace NSubstitute.Weaver.MscorlibWeaver.MscorlibWrapper
             return typeDefinition;
         }
 
+        void CreateNestedTypes(AssemblyDefinition target, TypeDefinition type, TypeDefinition typeDefinition)
+        {
+            foreach (var nestedType in type.NestedTypes)
+            {
+                var nestedTypeDefinition = new TypeDefinition(nestedType.Namespace, nestedType.Name, CreateTargetTypeAttributes(nestedType));
+
+                foreach (var gp in nestedType.GenericParameters)
+                {
+                    nestedTypeDefinition.GenericParameters.Add(new GenericParameter(gp.Name, nestedTypeDefinition));
+                }
+
+                typeDefinition.NestedTypes.Add(nestedTypeDefinition);
+                CreateNestedTypes(target, nestedType, nestedTypeDefinition);
+            }
+        }
+
         void CreateTypeFieldAndForwardConstructorDefinitionsIfNeeded(AssemblyDefinition target, TypeDefinition type, TypeDefinition typeDefinition, Dictionary<string, TypeDefinition> implementationTypes)
         {
             if (NeedsTypeFieldAndForwardConstructor(type))
             {
                 CreateFakeFieldAndForwardConstructorDefinitions(target, type, typeDefinition);
+            }
+
+            for (var i = 0; i < type.NestedTypes.Count; ++i)
+            {
+                CreateTypeFieldAndForwardConstructorDefinitionsIfNeeded(target, type.NestedTypes[i], typeDefinition.NestedTypes[i], implementationTypes);
             }
         }
 
@@ -452,6 +511,11 @@ namespace NSubstitute.Weaver.MscorlibWeaver.MscorlibWrapper
             if (NeedsFakeImplementation(type))
             {
                 implementationTypes[typeDefinition.FullName] = CreateFakeImplementation(target, type, typeDefinition, methodMap, implementationTypes);
+            }
+
+            for (var i = 0; i < type.NestedTypes.Count; ++i)
+            {
+                CreateForwardConstructorBodyAndFakeImplementationIfNeeded(target, type.NestedTypes[i], typeDefinition.NestedTypes[i], methodMap, implementationTypes);
             }
         }
 

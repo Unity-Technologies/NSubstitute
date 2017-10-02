@@ -70,6 +70,7 @@ namespace NSubstitute.Weaver.Tests.MscorlibWeaver
             var method = methods.Single(m => m.FullName == expectedMethod);
             Assert.That(method.Overrides, Has.Count.EqualTo(1));
             Assert.That(method.Overrides[0].FullName, Is.EqualTo("System.Void Fake.IA::Foo()"));
+            ((MethodReference)method.Body.Instructions.Single(i => i.OpCode == OpCodes.Callvirt).Operand).FullName.ShouldBe("System.Void IA::Foo()");
         }
 
         [Test]

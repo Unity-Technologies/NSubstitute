@@ -9,7 +9,7 @@ namespace NSubstitute.Weaver.MscorlibWeaver.MscorlibWrapper
     public class ReferenceRewriter
     {
         const string k_FakeNamespace = "Fake";
-        static Predicate<TypeReference> m_ShouldSkip = tr => false;
+        Predicate<TypeReference> m_ShouldSkip = tr => false;
         const string m_ToNamespacePrefix = k_FakeNamespace;
         const string m_FromNamespacePrefix = "";
 
