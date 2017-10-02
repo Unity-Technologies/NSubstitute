@@ -47,6 +47,52 @@ namespace NSubstitute.Weaver.Tests.MscorlibWeaver
 
         [Test]
         [Category("NG")]
+        public void InnerTypeTest()
+        {
+            CreateAssemblyFromCode(@"public class A { public class B { public int X; } public B Foo(B b) { return b; } }", out AssemblyDefinition target, out AssemblyDefinition mscorlib);
+
+            var a = target.MainModule.Types.Single(t => t.FullName == "Fake.A");
+            a.NestedTypes.Count.ShouldBe(1);
+        }
+
+        [Test]
+        [Category("NG")]
+        public void PrivateInterfaceImplementationTest()
+        {
+            CreateAssemblyFromCode(@"public interface IA { void Foo(); } public interface IB { int Foo(); } public class A : IA, IB { public int Foo() { return 0; } void IA.Foo() {} }", out AssemblyDefinition target, out AssemblyDefinition mscorlib);
+
+            var a = target.MainModule.Types.Single(t => t.FullName == "Fake.A");
+            var methods = a.Methods.Where(m => m.Name.Contains("Foo")).ToList();
+
+            var expectedMethod = "System.Void Fake.A::Fake.IA.Foo()";
+            Assert.That(methods.Select(m => m.FullName), Contains.Item(expectedMethod));
+
+            var method = methods.Single(m => m.FullName == expectedMethod);
+            Assert.That(method.Overrides, Has.Count.EqualTo(1));
+            Assert.That(method.Overrides[0].FullName, Is.EqualTo("System.Void Fake.IA::Foo()"));
+        }
+
+        [Test]
+        [Category("NG")]
+        public void PrivateInterfaceImplementationNotWithGenericsTest()
+        {
+            CreateAssemblyFromCode(@"public interface IA<T> { T Foo<U>(U u); } public interface IB<T> { int Foo<V>(); } public class A<T> : IA<float>, IA<IA<int>>, IB<T> { public int Foo<V>() { return 0; } float IA<float>.Foo<U>(U u) { return 0; } IA<int> IA<IA<int>>.Foo<U>(U u) { return null; } }", out AssemblyDefinition target, out AssemblyDefinition mscorlib);
+
+            var a = target.MainModule.Types.Single(t => t.FullName == "Fake.A`1");
+            var methods = a.Methods.Where(m => m.Name.Contains("Foo")).ToList();
+
+            var expectedMethod = "System.Single Fake.A`1::Fake.IA<System.Single>.Foo(U)";
+            Assert.That(methods.Select(m => m.FullName), Contains.Item(expectedMethod));
+            var expectedMethod2 = "Fake.IA`1<System.Int32> Fake.A`1::Fake.IA<Fake.IA<System.Int32>>.Foo(U)";
+            Assert.That(methods.Select(m => m.FullName), Contains.Item(expectedMethod2));
+
+            var method = methods.Single(m => m.FullName == expectedMethod);
+            Assert.That(method.Overrides, Has.Count.EqualTo(1));
+            Assert.That(method.Overrides[0].FullName, Is.EqualTo("System.Void Fake.IA::Foo()"));
+        }
+
+        [Test]
+        [Category("NG")]
         public void SimplePublicClassGetsFakeFieldAndCtor()
         {
             CreateAssemblyFromCode(@"public class A {}", out AssemblyDefinition target, out AssemblyDefinition mscorlib);
@@ -129,6 +175,19 @@ namespace NSubstitute.Weaver.Tests.MscorlibWeaver
 
         [Test]
         [Category("NG")]
+        public void HasFieldMarshalParameter()
+        {
+            CreateAssemblyFromCode(@"public class A { public void Foo([System.Runtime.InteropServices.MarshalAs(System.Runtime.InteropServices.UnmanagedType.BStr)] string x) {} }", out AssemblyDefinition target, out AssemblyDefinition mscorlib);
+
+            var a = target.MainModule.Types.Single(t => t.FullName == "Fake.A");
+            var foo = a.Methods.Single(m => m.Name == "Foo");
+
+            var p = foo.Parameters.Single();
+            p.HasFieldMarshal.ShouldBeFalse();
+        }
+
+        [Test]
+        [Category("NG")]
         public void SimpleInterfaceIsTranslated()
         {
             CreateAssemblyFromCode(@"public interface IA {}", out AssemblyDefinition target, out AssemblyDefinition mscorlib);
@@ -156,7 +215,7 @@ namespace NSubstitute.Weaver.Tests.MscorlibWeaver
             var targetType = target.MainModule.Types.Single(t => t.Name == "IB");
             targetType.FullName.ShouldBe("Fake.IB");
 
-            targetType.Interfaces.ShouldBe(new[] { parentType });
+            targetType.Interfaces[0].ShouldBeSameType(parentType);
         }
 
         [Test]
@@ -442,7 +501,7 @@ namespace NSubstitute.Weaver.Tests.MscorlibWeaver
             ((DefaultAssemblyResolver)target.MainModule.AssemblyResolver).AddSearchDirectory(pathPrefix);
 #endif
 
-            var copier = new Copier(new ProcessTypeResolver(mscorlib));
+            var copier = new Copier(new ProcessTypeResolver(mscorlib), tr => tr.Namespace == "System" || tr.Namespace.StartsWith("System."));
             copier.Copy(mscorlib, ref target, nsubstitute, mscorlib.MainModule.Types.Select(t => t.FullName).ToArray());
 
             WriteForPeVerify(target, mscorlibAssemblyName);
