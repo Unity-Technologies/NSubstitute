@@ -285,13 +285,19 @@ namespace NSubstitute.Weaver.MscorlibWeaver.MscorlibWrapper
                 return targetMethod;
             }
 
-
             if (!(reference is GenericInstanceMethod))
             {
-                if (reference.Module != null)
-                    return target.MainModule.Import(reference);
+                MethodReference importedReference;
 
-                return reference;
+                if (reference.Module != null)
+                    importedReference = target.MainModule.Import(reference);
+                else
+                    importedReference = reference;
+
+                //if (importedReference.DeclaringType.HasGenericParameters && !importedReference.DeclaringType.IsGenericInstance)
+                //    importedReference = importedReference.MakeHostInstanceGeneric(target, importedReference.DeclaringType.GenericParameters.ToArray());
+
+                return importedReference;
             }
 
             return null;
