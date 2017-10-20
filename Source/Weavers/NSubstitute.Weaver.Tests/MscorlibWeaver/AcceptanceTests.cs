@@ -89,6 +89,16 @@ namespace NSubstitute.Weaver.Tests.MscorlibWeaver
 
         [Test]
         [Category("NG")]
+        public void GenericTypeGetsFakeHolderTest()
+        {
+            CreateAssemblyFromCode(@"public interface IA<T> {} public class A<T> : IA<T> {}", out AssemblyDefinition target, out AssemblyDefinition mscorlib);
+
+            var a = target.MainModule.Types.Single(t => t.FullName == "Fake.A`2");
+            a.Interfaces.ShouldBeEmpty();
+        }
+
+        [Test]
+        [Category("NG")]
         [Ignore("Fails depressingly")]
         public void PrivateInterfaceImplementationNotWithGenericsTest()
         {
@@ -497,7 +507,7 @@ namespace NSubstitute.Weaver.Tests.MscorlibWeaver
             targetImplementation.Interfaces.Count.ShouldBe(2);
             targetImplementation.Interfaces[0].ShouldBeSameType(targetInterface);
 
-            targetImplementation.Methods.Select(m => m.Name).ShouldBe(new[] { ".ctor", "Foo", "Bar", "Fake.IA.get__FakeForwardProp_IA", "Fake.__FakeHolder<global::IA>.get_Forward" }, ignoreOrder: true);
+            targetImplementation.Methods.Select(m => m.Name).ShouldBe(new[] { ".ctor", "Foo", "Bar", "Fake.__FakeHolder<global::IA>.get_Forward" }, ignoreOrder: true);
 
             var fooMethod = targetImplementation.Methods.Single(m => m.Name == "Foo");
             fooMethod.Parameters.Count.ShouldBe(1);
@@ -517,14 +527,14 @@ namespace NSubstitute.Weaver.Tests.MscorlibWeaver
                 "IL_0000: ldarg.0",
                 "IL_0001: ldfld IA Fake._FakeImpl_IA::__fake_forward",
                 "IL_0006: ldarg y",
-                "IL_000a: callvirt IA Fake.IA::get__FakeForwardProp_IA()",
+                "IL_000a: callvirt IA Fake.__FakeHolder<IA>::get_Forward()",
                 "IL_000f: ldarg z",
                 "IL_0013: callvirt IA IA::Bar(IA,System.Int32)",
                 "IL_0018: newobj System.Void Fake._FakeImpl_IA::.ctor(IA)",
                 "IL_001d: ret"
             });
 
-            var fakeForwardMethod = targetImplementation.Methods.Single(m => m.Name == "Fake.IA.get__FakeForwardProp_IA");
+            var fakeForwardMethod = targetImplementation.Methods.Single(m => m.Name == "Fake.__FakeHolder<IA>.get_Forward");
             fakeForwardMethod.Overrides.ShouldHaveSingleItem();
         }
 

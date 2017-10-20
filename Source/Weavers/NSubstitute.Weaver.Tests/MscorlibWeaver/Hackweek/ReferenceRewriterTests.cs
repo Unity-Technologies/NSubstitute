@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using Mono.Cecil;
 using Mono.Cecil.Rocks;
@@ -48,7 +48,7 @@ namespace NSubstitute.Weaver.Tests.MscorlibWeaver.Hackweek
         public void OpenGenericStaysOpen()
         {
             var type = original.WithType("", "A`1", TypeAttributes.Class).WithGenericParameters("T");
-            var typeDefinition = target.WithType("Fake", "A`1", TypeAttributes.Class).WithGenericParameters("T").Type;
+            var typeDefinition = target.WithType("Fake", "A`2", TypeAttributes.Class).WithGenericParameters("T", "__T").Type;
 
             sut.Rewrite(target, type, typeDefinition, type).ShouldBeSameType(typeDefinition);
         }
@@ -60,10 +60,10 @@ namespace NSubstitute.Weaver.Tests.MscorlibWeaver.Hackweek
             var type = original.WithType("", "A`1", TypeAttributes.Class).WithGenericParameters("T");
 
             var simpleTypeDefinition = target.WithType("Fake.A", "Simple", TypeAttributes.Class).Type;
-            var typeDefinition = target.WithType("Fake", "A`1", TypeAttributes.Class).WithGenericParameters("T");
+            var typeDefinition = target.WithType("Fake", "A`2", TypeAttributes.Class).WithGenericParameters("T", "__T");
 
             var reference = type.MakeGenericInstanceType(simpleType);
-            var result = typeDefinition.MakeGenericInstanceType(simpleTypeDefinition);
+            var result = typeDefinition.MakeGenericInstanceType(simpleTypeDefinition, target.Target.MainModule.Import(simpleType));
 
             sut.Rewrite(target, type, typeDefinition, reference).ShouldBeSameType(result);
             sut.Rewrite(target, type, typeDefinition, type.Type.GenericParameters[0]).ShouldBe(typeDefinition.Type.GenericParameters[0]);
@@ -77,10 +77,10 @@ namespace NSubstitute.Weaver.Tests.MscorlibWeaver.Hackweek
             var type = original.WithType("", "A`1", TypeAttributes.Class).WithGenericParameters("T");
 
             var simpleTypeDefinition = target.WithType("Fake.A", "Simple", TypeAttributes.Class).Type;
-            var typeDefinition = target.WithType("Fake", "A`1", TypeAttributes.Class).WithGenericParameters("T");
+            var typeDefinition = target.WithType("Fake", "A`2", TypeAttributes.Class).WithGenericParameters("T", "__T");
 
             var reference = type.MakeGenericInstanceType(type.MakeGenericInstanceType(simpleType));
-            var result = typeDefinition.MakeGenericInstanceType(typeDefinition.MakeGenericInstanceType(simpleTypeDefinition));
+            var result = typeDefinition.MakeGenericInstanceType(typeDefinition.MakeGenericInstanceType(simpleTypeDefinition, target.Target.MainModule.Import(simpleType)), target.Target.MainModule.Import(type.Type).MakeGenericType(target.Target.MainModule.Import(simpleType)));
 
             sut.Rewrite(target, type, typeDefinition, reference).ShouldBeSameType(result);
         }

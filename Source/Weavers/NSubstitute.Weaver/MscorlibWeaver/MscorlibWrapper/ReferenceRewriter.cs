@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.Linq;
 using Mono.Cecil;
@@ -164,7 +164,7 @@ namespace NSubstitute.Weaver.MscorlibWeaver.MscorlibWrapper
                     if (lookupFake)
                     {
                         var newNameSpace = RewriteNamespace(reference.Namespace);
-                        typeRef = new TypeReference(newNameSpace, reference.Name, targetAssembly.MainModule, targetAssembly.MainModule);
+                        typeRef = new TypeReference(newNameSpace, RewriteGenericTypeName(reference), targetAssembly.MainModule, targetAssembly.MainModule);
                     }
                     else
                     {
@@ -184,6 +184,14 @@ namespace NSubstitute.Weaver.MscorlibWeaver.MscorlibWrapper
                             var rewrittenArgument = Rewrite(targetAssembly, genericArgument, methodMap, lookupFake);
                             targetInstanceType.GenericArguments.Add(rewrittenArgument);
                         }
+                        if (targetInstanceType.Namespace == k_FakeNamespace || (targetInstanceType.Namespace?.StartsWith($"{k_FakeNamespace}.") ?? false))
+                        {
+                            foreach (var genericArgument in origInstanceType.GenericArguments)
+                            {
+                                var rewrittenArgument = Rewrite(targetAssembly, genericArgument, methodMap, lookupFake: false);
+                                targetInstanceType.GenericArguments.Add(rewrittenArgument);
+                            }
+                        }
                     }
                     typeRef = targetInstanceType;
                 }
@@ -194,6 +202,8 @@ namespace NSubstitute.Weaver.MscorlibWeaver.MscorlibWrapper
                     {
                         typeRef.GenericParameters.Add(new GenericParameter(genericParameter.Name, typeRef));
                     }
+                    foreach (var genericParameter in reference.GenericParameters)
+                        typeRef.GenericParameters.Add(new GenericParameter($"__{genericParameter.Name}", typeRef));
                 }
 
                 return typeRef;
@@ -204,6 +214,17 @@ namespace NSubstitute.Weaver.MscorlibWeaver.MscorlibWrapper
                 return importedTypeReference.MakeGenericInstanceType(((GenericInstanceType)reference).GenericArguments.Select(a => Rewrite(targetAssembly, a, methodMap, lookupFake)).ToArray());
 
             return importedTypeReference;
+        }
+
+        static string RewriteGenericTypeName(TypeReference type)
+        {
+            var name = type.Name;
+            if (name.Contains("`"))
+            {
+                var parts = name.Split('`');
+                name = $"{parts[0]}`{int.Parse(parts[1]) * 2}";
+            }
+            return name;
         }
 
         static bool HasForwardingConstructorInMethodCollection(GenericParameter genericParameter, TypeDefinition rewrittenDeclaringTypeDefinition)
