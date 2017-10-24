@@ -147,8 +147,8 @@ namespace NSubstitute.Weaver.MscorlibWeaver.MscorlibWrapper
                         return rref;
                     }
 
-                    var args = genericInstance.GenericArguments.Select(Rewrite);
-                    rv.Add(e.Element.Item2.MakeGenericInstanceType(args.ToArray()));
+                    var args = genericInstance.GenericArguments.Select(Rewrite).ToArray();
+                    rv.Add(e.Element.Item2.MakeGenericInstanceType(args));
                     return;
                 }
 
@@ -180,7 +180,7 @@ namespace NSubstitute.Weaver.MscorlibWeaver.MscorlibWrapper
             {
                 if (!typeDefinition.Interfaces.Any(t => t.FullName == iface.FullName))
                 {
-                    typeDefinition.Interfaces.Add(rewriter.Rewrite(target, type, typeDefinition, iface, lookupFake: false));
+                    typeDefinition.Interfaces.Add(rewriter.ImportRecursively(target, iface));
                 }
 
                 var name = new StringBuilder();
@@ -202,7 +202,7 @@ namespace NSubstitute.Weaver.MscorlibWeaver.MscorlibWrapper
                 typeDefinition.Properties.Add(fakeHolderProperty);
 
                 var method = new MethodDefinition($"{name}.get_Forward", MethodAttributes.Private | MethodAttributes.HideBySig | MethodAttributes.Virtual | MethodAttributes.NewSlot | MethodAttributes.SpecialName, fakeHolderProperty.PropertyType);
-                method.Overrides.Add(fakeHolder.Methods[0].MakeHostInstanceGeneric(target, reinstantiate));
+                method.Overrides.Add(fakeHolder.Methods[0].MakeHostInstanceGeneric(target, false, reinstantiate));
                 method.DeclaringType = typeDefinition;
 
                 method.Body = new MethodBody(method);
@@ -211,6 +211,11 @@ namespace NSubstitute.Weaver.MscorlibWeaver.MscorlibWrapper
                 method.Body.Instructions.Add(Instruction.Create(OpCodes.Ret));
 
                 fakeHolderProperty.GetMethod = method;
+            }
+
+            for (var i = 0; i < type.NestedTypes.Count; ++i)
+            { // TODO: non-public nested types
+                AttachFakeHolderImplementations(target, type.NestedTypes[i], typeDefinition.NestedTypes[i], implementationTypes, fakeHolder);
             }
         }
 
@@ -459,10 +464,12 @@ namespace NSubstitute.Weaver.MscorlibWeaver.MscorlibWrapper
                 var fakeForwardName = $"Fake.__FakeHolder`1<{(paramType.FullName.StartsWith("Fake.") ? paramType.FullName.Substring(5) : paramType.FullName)}>";
                 var fakeForwardType = paramType.Interfaces.FirstOrDefault(zz => zz.FullName == fakeForwardName);
                 var fakeForwardArgument = (fakeForwardType as GenericInstanceType)?.GenericArguments[0];
-                var fakeForward = fakeForwardType?.Resolve().Methods.Single().MakeHostInstanceGeneric(target, fakeForwardArgument);
+                var fakeForward = fakeForwardType?.Resolve().Methods.Single().MakeHostInstanceGeneric(target, true, fakeForwardArgument);
 
-                if ((param.ParameterType.Namespace == k_NamespacePrefix || param.ParameterType.Namespace.StartsWith($"{k_NamespacePrefix}.")) && fakeForward != null)
+                if (IsFakedType(param.ParameterType) && fakeForward != null)
+                {
                     methodDefinition.AddInstruction(OpCodes.Callvirt, fakeForward);
+                }
                 else if (paramType == typeDefinition) // TODO: Generics
                 {
                     var forwardField = typeDefinition.Fields.Single(f => f.Name == k_FakeForward);
@@ -481,7 +488,7 @@ namespace NSubstitute.Weaver.MscorlibWeaver.MscorlibWrapper
             var targetMethod = RewriteMethodReference(target, type, typeDefinition, method, methodDefinition, originalMethod, methodMap);
 
             if (originalMethod.DeclaringType.Resolve() == type && type.Name != typeDefinition.Name && targetMethod.DeclaringType.HasGenericParameters && !targetMethod.DeclaringType.IsGenericInstance)
-                targetMethod = targetMethod.MakeHostInstanceGeneric(target, typeDefinition.GenericParameters.ToArray());
+                targetMethod = targetMethod.MakeHostInstanceGeneric(target, true, typeDefinition.GenericParameters.Skip(type.GenericParameters.Count).ToArray());
 
             methodDefinition.AddInstruction(method.IsStatic ? OpCodes.Call : OpCodes.Callvirt, target.MainModule.Import(targetMethod));
 
@@ -505,6 +512,14 @@ namespace NSubstitute.Weaver.MscorlibWeaver.MscorlibWrapper
             }
 
             methodDefinition.AddInstruction(OpCodes.Ret);
+        }
+
+        private static bool IsFakedType(TypeReference reference)
+        {
+            if (reference.IsNested)
+                return IsFakedType(reference.DeclaringType);
+
+            return reference.Namespace == k_NamespacePrefix || reference.Namespace.StartsWith($"{k_NamespacePrefix}.");
         }
 
         MethodReference RewriteMethodReference(AssemblyDefinition target, TypeDefinition type, TypeDefinition typeDefinition, MethodDefinition method, MethodDefinition methodDefinition, MethodDefinition methodReference, Dictionary<MethodDefinition, MethodDefinition> methodMap, bool importFinalReference = true)
@@ -593,6 +608,7 @@ namespace NSubstitute.Weaver.MscorlibWeaver.MscorlibWrapper
             if (!type.HasGenericParameters)
                 return;
 
+            // TODO add generic constraints to __T generic parameters
             for (var i = 0; i < type.GenericParameters.Count; ++i)
             {
                 var originalGenericParameter = type.GenericParameters[i];
@@ -655,8 +671,8 @@ namespace NSubstitute.Weaver.MscorlibWeaver.MscorlibWrapper
             foreach (var gp in type.GenericParameters)
                 typeDefinition.GenericParameters.Add(new GenericParameter($"__{gp.Name}", typeDefinition));
 
-            var importedType = type.HasGenericParameters ? target.MainModule.Import(type).MakeGenericType(typeDefinition.GenericParameters.Skip(type.GenericParameters.Count).ToArray()) : target.MainModule.Import(type);
-            var fakeHolderInstance = fakeHolder.MakeGenericType(importedType);
+            var importedType = type.HasGenericParameters ? target.MainModule.Import(type).MakeGenericInstanceType(typeDefinition.GenericParameters.Skip(type.GenericParameters.Count).ToArray()) : target.MainModule.Import(type);
+            var fakeHolderInstance = fakeHolder.MakeGenericInstanceType(importedType);
             typeDefinition.Interfaces.Add(fakeHolderInstance);
 
             CreateNestedTypes(target, type, typeDefinition, fakeHolder);
@@ -710,8 +726,14 @@ namespace NSubstitute.Weaver.MscorlibWeaver.MscorlibWrapper
                 {
                     nestedTypeDefinition.GenericParameters.Add(new GenericParameter(gp.Name, nestedTypeDefinition));
                 }
+                // TODO: test with nested types with generic parameters
+
+                var importedType = nestedType.HasGenericParameters ? target.MainModule.Import(nestedType).MakeGenericInstanceType(nestedTypeDefinition.GenericParameters.Skip(nestedType.GenericParameters.Count).ToArray()) : target.MainModule.Import(nestedType);
+                var fakeHolderInstance = fakeHolder.MakeGenericInstanceType(importedType);
+                nestedTypeDefinition.Interfaces.Add(fakeHolderInstance);
 
                 typeDefinition.NestedTypes.Add(nestedTypeDefinition);
+
                 CreateNestedTypes(target, nestedType, nestedTypeDefinition, fakeHolder);
             }
         }
@@ -739,29 +761,29 @@ namespace NSubstitute.Weaver.MscorlibWeaver.MscorlibWrapper
             forwardConstructor.Parameters.Add(new ParameterDefinition("forward", ParameterAttributes.None, field.FieldType));
             typeDefinition.Methods.Add(forwardConstructor);
 
-            if (NeedsFakeForwardProperties(type))
-            {
-                foreach (var myType in GetTypesToCreateForwardPropertiesFor(target, type))
-                {
-                    if (!NeedsFakeForwardPropertyDefinition(myType.Resolve()))
-                        continue;
+            //if (NeedsFakeForwardProperties(type))
+            //{
+            //    foreach (var myType in GetTypesToCreateForwardPropertiesFor(target, type))
+            //    {
+            //        if (!NeedsFakeForwardPropertyDefinition(myType.Resolve()))
+            //            continue;
 
-                    var rewriteTypeReference = RewriteTypeReference(target, type, typeDefinition, null, null, myType, null, lookupFake: false);
-                    if (rewriteTypeReference.HasGenericParameters && !rewriteTypeReference.IsGenericInstance)
-                        rewriteTypeReference = rewriteTypeReference.MakeGenericInstanceType(typeDefinition.GenericParameters.Skip(type.GenericParameters.Count).ToArray());
-                    var fakeForwardProp = new PropertyDefinition(GetFakeForwardPropertyImplementationName(myType), PropertyAttributes.None, rewriteTypeReference);
-                    fakeForwardProp.HasThis = true;
-                    typeDefinition.Properties.Add(fakeForwardProp);
+            //        var rewriteTypeReference = RewriteTypeReference(target, type, typeDefinition, null, null, myType, null, lookupFake: false);
+            //        if (rewriteTypeReference.HasGenericParameters && !rewriteTypeReference.IsGenericInstance)
+            //            rewriteTypeReference = rewriteTypeReference.MakeGenericInstanceType(typeDefinition.GenericParameters.Skip(type.GenericParameters.Count).ToArray());
+            //        var fakeForwardProp = new PropertyDefinition(GetFakeForwardPropertyImplementationName(myType), PropertyAttributes.None, rewriteTypeReference);
+            //        fakeForwardProp.HasThis = true;
+            //        typeDefinition.Properties.Add(fakeForwardProp);
 
-                    var methodAttributes = MethodAttributes.Public | MethodAttributes.HideBySig | MethodAttributes.Virtual | MethodAttributes.NewSlot | MethodAttributes.SpecialName;
-                    if (myType == type.BaseType)
-                        methodAttributes = methodAttributes & ~MethodAttributes.NewSlot;
-                    var getFakeForwardProp = new MethodDefinition(GetFakeForwardPropertyGetterImplementationNamePrefix(myType), methodAttributes, fakeForwardProp.PropertyType);
-                    getFakeForwardProp.DeclaringType = typeDefinition;
+            //        var methodAttributes = MethodAttributes.Public | MethodAttributes.HideBySig | MethodAttributes.Virtual | MethodAttributes.NewSlot | MethodAttributes.SpecialName;
+            //        if (myType == type.BaseType)
+            //            methodAttributes = methodAttributes & ~MethodAttributes.NewSlot;
+            //        var getFakeForwardProp = new MethodDefinition(GetFakeForwardPropertyGetterImplementationNamePrefix(myType), methodAttributes, fakeForwardProp.PropertyType);
+            //        getFakeForwardProp.DeclaringType = typeDefinition;
 
-                    fakeForwardProp.GetMethod = getFakeForwardProp;
-                }
-            }
+            //        fakeForwardProp.GetMethod = getFakeForwardProp;
+            //    }
+            //}
         }
 
         void CreateForwardConstructorBodyAndFakeImplementationIfNeeded(AssemblyDefinition target, TypeDefinition type, TypeDefinition typeDefinition, Dictionary<MethodDefinition, MethodDefinition> methodMap, Dictionary<string, TypeDefinition> implementationTypes, TypeDefinition fakeHolder)
@@ -791,40 +813,44 @@ namespace NSubstitute.Weaver.MscorlibWeaver.MscorlibWrapper
 
         string GetFakeForwardPropertyGetterNamePrefix(TypeReference type)
         {
-            return k_FakeForwardPropertyGetterNamePrefix + GetSafeNameFromTypeReferenceFullNameStrippingFake(type);
+            throw new InvalidOperationException();
+//            return k_FakeForwardPropertyGetterNamePrefix + GetSafeNameFromTypeReferenceFullNameStrippingFake(type);
         }
 
         string GetFakeForwardPropertyName(TypeReference type)
         {
-            return k_FakeForwardPropertyNamePrefix + GetSafeNameFromTypeReferenceFullNameStrippingFake(type);
+            throw new InvalidOperationException();
+//            return k_FakeForwardPropertyNamePrefix + GetSafeNameFromTypeReferenceFullNameStrippingFake(type);
         }
 
         static string GetSafeNameFromTypeReferenceFullNameStrippingFake(TypeReference type)
         {
-            var fullName = type.FullName;
+            throw new InvalidOperationException();
+            //var fullName = type.FullName;
 
-            if (type.IsGenericInstance)
-                fullName = type.Resolve().FullName;
+            //if (type.IsGenericInstance)
+            //    fullName = type.Resolve().FullName;
 
-            if (type.Namespace == "Fake" || type.Namespace.StartsWith("Fake."))
-                fullName = fullName.Substring(5);
+            //if (type.Namespace == "Fake" || type.Namespace.StartsWith("Fake."))
+            //    fullName = fullName.Substring(5);
 
-            return fullName.Replace(".", "_dot_").Replace("+", "_plus_").Replace("`", "_tick_").Replace("/", "_slash_");
+            //return fullName.Replace(".", "_dot_").Replace("+", "_plus_").Replace("`", "_tick_").Replace("/", "_slash_");
         }
 
         IEnumerable<TypeReference> GetTypesToCreateForwardPropertiesFor(AssemblyDefinition target, TypeDefinition type)
         {
-            yield return type;
-            foreach (var iface in type.Interfaces)
-            {
-                if (ShouldSkip(iface.Resolve()))
-                    continue;
+            throw new InvalidOperationException();
+            //yield return type;
+            //foreach (var iface in type.Interfaces)
+            //{
+            //    if (ShouldSkip(iface.Resolve()))
+            //        continue;
 
-                yield return iface;
-            }
-            var baseType = GetModuleTypeDefinition(target, type.BaseType);
-            if (baseType != null)
-                yield return type.BaseType;
+            //    yield return iface;
+            //}
+            //var baseType = GetModuleTypeDefinition(target, type.BaseType);
+            //if (baseType != null)
+            //    yield return type.BaseType;
         }
 
         void CreateFakeFieldAndForwardConstructor(AssemblyDefinition target, TypeDefinition type, TypeDefinition typeDefinition, Dictionary<MethodDefinition, MethodDefinition> methodMap)
@@ -866,72 +892,75 @@ namespace NSubstitute.Weaver.MscorlibWeaver.MscorlibWrapper
 
             //typeDefinition.Methods.Add(forwardConstructor);
 
-            if (NeedsFakeForwardProperties(type))
+            if (false /*NeedsFakeForwardProperties(type)*/)
             {
-                var i = -1;
-                foreach (var myType in GetTypesToCreateForwardPropertiesFor(target, type))
-                {
-                    if (!NeedsFakeForwardPropertyDefinition(myType.Resolve()))
-                        continue;
+//                var i = -1;
+//                foreach (var myType in GetTypesToCreateForwardPropertiesFor(target, type))
+//                {
+//                    if (!NeedsFakeForwardPropertyDefinition(myType.Resolve()))
+//                        continue;
 
-                    ++i;
+//                    ++i;
 
-                    var fakeForwardProp = typeDefinition.Properties[i];
+//                    var fakeForwardProp = typeDefinition.Properties[i];
 
-                    var getFakeForwardProp = fakeForwardProp.GetMethod;
-                    getFakeForwardProp.AddInstruction(OpCodes.Ldarg_0)
-                        .AddInstruction(OpCodes.Ldfld, field)
-                        .AddInstruction(OpCodes.Ret);
+//                    var getFakeForwardProp = fakeForwardProp.GetMethod;
+//                    getFakeForwardProp.AddInstruction(OpCodes.Ldarg_0)
+//                        .AddInstruction(OpCodes.Ldfld, field)
+//                        .AddInstruction(OpCodes.Ret);
 
-                    if (typeDefinition.Name != myType.Name) // HACK: verify same types with and without Fake namespace correctly
-                    {
-                        var baseMethod = GetModuleTypeDefinition(target, myType.Resolve()).Properties.Single(p => p.Name == GetFakeForwardPropertyImplementationName(myType.Resolve()) || p.Name == GetFakeForwardPropertyName(myType.Resolve()));
-                        var reference = RewriteMethodReference(target, myType.Resolve(), typeDefinition, baseMethod.GetMethod, getFakeForwardProp, baseMethod.GetMethod, methodMap, false);
-                        if (myType.IsGenericInstance)
-                            reference = reference.MakeHostInstanceGeneric(target, ((GenericInstanceType)myType).GenericArguments.Select(ga => RewriteTypeReference(target, type, typeDefinition, null, null, ga, null, lookupFake: false)).ToArray());
-                        else if (myType.HasGenericParameters && !reference.DeclaringType.IsGenericInstance)
-                            reference = reference.MakeHostInstanceGeneric(target, myType.GenericParameters.ToArray()); // TODO: Only do this for faked types
-//                        var reference = new MethodReference(.Name, baseMethod);
-                        //getFakeForwardProp.Overrides.Add(myType.IsGenericInstance ? new MethodReference(baseMethod.GetMethod.Name, RewriteTypeReference(target, myType.Resolve(), typeDefinition, null, null, myType), myType) : baseMethod.GetMethod);
-                        getFakeForwardProp.Overrides.Add(reference);
-                    }
+//                    if (typeDefinition.Name != myType.Name) // HACK: verify same types with and without Fake namespace correctly
+//                    {
+//                        var baseMethod = GetModuleTypeDefinition(target, myType.Resolve()).Properties.Single(p => p.Name == GetFakeForwardPropertyImplementationName(myType.Resolve()) || p.Name == GetFakeForwardPropertyName(myType.Resolve()));
+//                        var reference = RewriteMethodReference(target, myType.Resolve(), typeDefinition, baseMethod.GetMethod, getFakeForwardProp, baseMethod.GetMethod, methodMap, false);
+//                        if (myType.IsGenericInstance)
+//                            reference = reference.MakeHostInstanceGeneric(target, ((GenericInstanceType)myType).GenericArguments.Select(ga => RewriteTypeReference(target, type, typeDefinition, null, null, ga, null, lookupFake: false)).ToArray());
+//                        else if (myType.HasGenericParameters && !reference.DeclaringType.IsGenericInstance)
+//                            reference = reference.MakeHostInstanceGeneric(target, myType.GenericParameters.ToArray()); // TODO: Only do this for faked types
+////                        var reference = new MethodReference(.Name, baseMethod);
+//                        //getFakeForwardProp.Overrides.Add(myType.IsGenericInstance ? new MethodReference(baseMethod.GetMethod.Name, RewriteTypeReference(target, myType.Resolve(), typeDefinition, null, null, myType), myType) : baseMethod.GetMethod);
+//                        getFakeForwardProp.Overrides.Add(reference);
+//                    }
 
-                    fakeForwardProp.GetMethod = getFakeForwardProp;
-                }
+//                    fakeForwardProp.GetMethod = getFakeForwardProp;
+//                }
             }
         }
 
         string GetFakeForwardPropertyImplementationName(TypeReference type)
         {
-            var idx = type.FullName.LastIndexOf("`");
-            if (idx == -1)
-                return $"Fake.{type.FullName.Replace("/", "+")}.{GetFakeForwardPropertyName(type)}";
-            var baseName = type.FullName;
-            if (Regex.Match(type.FullName, @"`\d+<").Success)
-            {
-                baseName = Regex.Replace(baseName, @"`\d+<", "<");
-            }
-            else
-            {
-                // TODO: consider nested classes A.B<>.C<>
-                baseName = $"{type.FullName.Substring(0, idx)}<{string.Join(",", type.GenericParameters.Select(gp => gp.Name))}>";
-            }
-            return $"Fake.{baseName}.{GetFakeForwardPropertyName(type)}";
+            throw new InvalidOperationException();
+            //var idx = type.FullName.LastIndexOf("`");
+            //if (idx == -1)
+            //    return $"Fake.{type.FullName.Replace("/", "+")}.{GetFakeForwardPropertyName(type)}";
+            //var baseName = type.FullName;
+            //if (Regex.Match(type.FullName, @"`\d+<").Success)
+            //{
+            //    baseName = Regex.Replace(baseName, @"`\d+<", "<");
+            //}
+            //else
+            //{
+            //    // TODO: consider nested classes A.B<>.C<>
+            //    baseName = $"{type.FullName.Substring(0, idx)}<{string.Join(",", type.GenericParameters.Select(gp => gp.Name))}>";
+            //}
+            //return $"Fake.{baseName}.{GetFakeForwardPropertyName(type)}";
         }
 
         string GetFakeForwardPropertyGetterImplementationNamePrefix(TypeReference type)
         {
-            return $"Fake.{Regex.Replace(type.FullName, @"`\d<", "<")}.{GetFakeForwardPropertyGetterNamePrefix(type)}";
+            throw new InvalidOperationException();
+            //return $"Fake.{Regex.Replace(type.FullName, @"`\d<", "<")}.{GetFakeForwardPropertyGetterNamePrefix(type)}";
         }
 
         bool NeedsFakeForwardPropertyDefinition(TypeDefinition type)
         {
-            return type.IsInterface || type.IsClass && type.IsAbstract || type.IsNestedPublic;
+            throw new InvalidOperationException();
+            //return type.IsInterface || type.IsClass && type.IsAbstract || type.IsNestedPublic;
         }
 
         bool NeedsFakeForwardProperties(TypeDefinition type)
         {
-            return false;
+            throw new InvalidOperationException();
             /*
             if (ShouldSkip(type))
                 return false;
@@ -1015,13 +1044,18 @@ namespace NSubstitute.Weaver.MscorlibWeaver.MscorlibWrapper
             return instance;
         }
 
-        public static MethodReference MakeHostInstanceGeneric(this MethodReference method, AssemblyDefinition target, params TypeReference[] arguments)
+        public static MethodReference MakeHostInstanceGeneric(this MethodReference method, AssemblyDefinition target, bool trimGenericCount = true, params TypeReference[] arguments)
         {
             var typeReference = method.DeclaringType;
-            var realTypeReference = new TypeReference(typeReference.Namespace, typeReference.Name.Contains("`") ? typeReference.Name.Substring(0, typeReference.Name.IndexOf("`")) : typeReference.Name, typeReference.Module, typeReference.Scope, typeReference.IsValueType);
+
+            string name = typeReference.Name;
+            if (trimGenericCount)
+                name = typeReference.Name.Contains("`") ? typeReference.Name.Substring(0, typeReference.Name.IndexOf("`")) : typeReference.Name;
+
+            var realTypeReference = new TypeReference(typeReference.Namespace, name, typeReference.Module, typeReference.Scope, typeReference.IsValueType);
             foreach (var gp in typeReference.GenericParameters)
                 realTypeReference.GenericParameters.Add(new GenericParameter(gp.Name, realTypeReference));
-            realTypeReference = realTypeReference.MakeGenericType(arguments);
+            realTypeReference = realTypeReference.MakeGenericInstanceType(arguments);
 
             var reference = new MethodReference(method.Name, method.ReturnType, realTypeReference)
             {
@@ -1040,7 +1074,7 @@ namespace NSubstitute.Weaver.MscorlibWeaver.MscorlibWrapper
             if (method.ReturnType is GenericParameter rgp)
             {
                 if (rgp.DeclaringType != null)
-                    method.ReturnType = arguments[method.DeclaringType.GenericParameters.IndexOf(rgp)];
+                    reference.ReturnType = arguments[method.DeclaringType.GenericParameters.IndexOf(rgp)];
             }
 
             return reference;

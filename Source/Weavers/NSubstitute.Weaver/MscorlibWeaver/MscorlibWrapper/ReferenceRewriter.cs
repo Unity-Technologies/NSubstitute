@@ -22,112 +22,16 @@ namespace NSubstitute.Weaver.MscorlibWeaver.MscorlibWrapper
         // assumes generic parameter has same names in original and target
         public TypeReference Rewrite(AssemblyDefinition target, TypeDefinition type, TypeDefinition typeDefinition, TypeReference reference, MethodDefinition method = null, MethodDefinition methodDefinition = null, Dictionary<MethodDefinition, MethodDefinition> methodMap = null, bool lookupFake = true)
         {
-//            return OldRewrite(target, type, typeDefinition, reference, method, methodDefinition, lookupFake);
             return Rewrite(target, reference, methodMap, lookupFake);
         }
 
-        public TypeReference OldRewrite(AssemblyDefinition target, TypeDefinition type, TypeDefinition typeDefinition, TypeReference reference, MethodDefinition method = null, MethodDefinition methodDefinition = null, bool lookupFake = true)
-        {
-            if (reference == null)
-                return null;
-
-            var targetType = reference;
-
-            if (targetType.IsGenericInstance)
-                targetType = targetType.Resolve();
-
-            TypeReference targetReferenceDefinition = null;
-            if (lookupFake)
-                targetReferenceDefinition = target.MainModule.Types.SingleOrDefault(t => reference.Name == t.Name && t.Namespace == (reference.Namespace == "" ? "Fake" : $"Fake.{reference.Namespace}"));
-
-            if (targetReferenceDefinition != null)
-                targetType = targetReferenceDefinition;
-
-            var import = !targetType.IsGenericParameter;
-            if (targetType.IsArray)
-            {
-                targetType = Rewrite(target, type, typeDefinition, targetType.GetElementType(), method, methodDefinition, null, lookupFake).MakeArrayType();
-                import = false;
-            }
-            if (targetType.IsByReference)
-            {
-                targetType = Rewrite(target, type, typeDefinition, targetType.GetElementType(), method, methodDefinition, null, lookupFake).MakeByReferenceType();
-                import = false;
-            }
-
-            if (import)
-                targetType = target.MainModule.Import(targetType);
-
-            if (reference is GenericParameter)
-            {
-                var genericParameter = (GenericParameter)reference;
-                if (genericParameter.DeclaringMethod == null)
-                {
-                    var targetGenericParameterType = typeDefinition.GenericParameters.FirstOrDefault(gp => gp.Name == genericParameter.Name);
-                    if (targetGenericParameterType == null)
-                        throw new InvalidOperationException("Unknown generic parameter reference");
-                    return targetGenericParameterType;
-                }
-                if (method == null || methodDefinition == null)
-                    throw new InvalidOperationException("Unknown generic parameter reference");
-                var targetMethodGenericParameterType = methodDefinition.GenericParameters.FirstOrDefault(gp => gp.Name == genericParameter.Name);
-                if (targetMethodGenericParameterType == null)
-                    throw new InvalidOperationException("Unknown generic parameter reference");
-                return targetMethodGenericParameterType;
-            }
-
-            if (reference.IsGenericInstance)
-            {
-                var genericInstanceType = (GenericInstanceType)reference;
-                var genericParameters = genericInstanceType.GenericArguments.Select(ga => Rewrite(target, type, typeDefinition, ga, method, methodDefinition, null, lookupFake)).ToArray();
-                targetType = targetType.MakeGenericInstanceType(genericParameters);
-            }
-
-            return targetType;
-        }
-
-        public TypeReference Rewrite(AssemblyDefinition targetAssembly, TypeReference reference, Dictionary<MethodDefinition, MethodDefinition> methodMap, bool lookupFake = true)
+        public TypeReference Rewrite(AssemblyDefinition targetAssembly, TypeReference reference, Dictionary<MethodDefinition, MethodDefinition> methodMap, bool lookupFake = true, bool useFakeForGenericParameters = false)
         {
             if (reference == null)
                 return null;
 
             if (reference.IsGenericParameter)
-            {
-                TypeReference rewrittenDeclareingType;
-                var genericParameter = ((GenericParameter)reference);
-                if (reference.DeclaringType == null)
-                {
-                    rewrittenDeclareingType = Rewrite(targetAssembly, genericParameter.DeclaringMethod.DeclaringType, methodMap, lookupFake);
-                    var originalMethod = genericParameter.DeclaringMethod.Resolve();
-
-                    var rewrittenDeclaringTypeDefinition = rewrittenDeclareingType.Resolve();
-
-                    //var originalMethodTableIndex = originalMethod.DeclaringType.Methods.IndexOf(originalMethod);
-                    //for (var i = 0; i < originalMethodTableIndex; ++i)
-                    //    if (originalMethod.DeclaringType.Methods[i].IsConstructor)
-                    //        --originalMethodTableIndex;
-                    //if (HasForwardingConstructorInMethodCollection(genericParameter, rewrittenDeclaringTypeDefinition))
-                    //    ++originalMethodTableIndex;
-
-                    //var targetMethod = rewrittenDeclaringTypeDefinition.Methods[originalMethodTableIndex];
-                    var targetMethod = methodMap[originalMethod]; // TODO: Pray
-
-                    if (genericParameter.Position < 0 || genericParameter.Position >= targetMethod.GenericParameters.Count)
-                        throw new InvalidOperationException("Unknown generic method type parameter");
-
-                    return targetMethod.GenericParameters[genericParameter.Position];
-                }
-                else
-                {
-                    rewrittenDeclareingType = Rewrite(targetAssembly, reference.DeclaringType, methodMap, lookupFake);
-                    rewrittenDeclareingType = rewrittenDeclareingType.Resolve();
-
-                    if (genericParameter.Position < 0 || genericParameter.Position >= rewrittenDeclareingType.GenericParameters.Count)
-                        throw new InvalidOperationException("Unknown generic type parameter");
-
-                    return rewrittenDeclareingType.GenericParameters[genericParameter.Position];
-                }
-            }
+                return RewriteGenericParameter(targetAssembly, reference, methodMap, lookupFake, useFakeForGenericParameters);
 
             if (reference.IsArray)
                 return Rewrite(targetAssembly, reference.GetElementType(), methodMap, lookupFake).MakeArrayType(((ArrayType)reference).Rank);
@@ -161,7 +65,7 @@ namespace NSubstitute.Weaver.MscorlibWeaver.MscorlibWrapper
                 }
                 else
                 {
-                    if (lookupFake)
+                    if (lookupFake && !(reference.Namespace.StartsWith("Fake.") || reference.Namespace == "Fake"))
                     {
                         var newNameSpace = RewriteNamespace(reference.Namespace);
                         typeRef = new TypeReference(newNameSpace, RewriteGenericTypeName(reference), targetAssembly.MainModule, targetAssembly.MainModule);
@@ -188,7 +92,7 @@ namespace NSubstitute.Weaver.MscorlibWeaver.MscorlibWrapper
                         {
                             foreach (var genericArgument in origInstanceType.GenericArguments)
                             {
-                                var rewrittenArgument = Rewrite(targetAssembly, genericArgument, methodMap, lookupFake: false);
+                                var rewrittenArgument = Rewrite(targetAssembly, genericArgument, methodMap, lookupFake: false, useFakeForGenericParameters: true);
                                 targetInstanceType.GenericArguments.Add(rewrittenArgument);
                             }
                         }
@@ -202,8 +106,6 @@ namespace NSubstitute.Weaver.MscorlibWeaver.MscorlibWrapper
                     {
                         typeRef.GenericParameters.Add(new GenericParameter(genericParameter.Name, typeRef));
                     }
-                    foreach (var genericParameter in reference.GenericParameters)
-                        typeRef.GenericParameters.Add(new GenericParameter($"__{genericParameter.Name}", typeRef));
                 }
 
                 return typeRef;
@@ -214,6 +116,133 @@ namespace NSubstitute.Weaver.MscorlibWeaver.MscorlibWrapper
                 return importedTypeReference.MakeGenericInstanceType(((GenericInstanceType)reference).GenericArguments.Select(a => Rewrite(targetAssembly, a, methodMap, lookupFake)).ToArray());
 
             return importedTypeReference;
+        }
+
+        private TypeReference RewriteGenericParameter(AssemblyDefinition targetAssembly, TypeReference reference, Dictionary<MethodDefinition, MethodDefinition> methodMap, bool lookupFake, bool useFakeForGenericParameters)
+        {
+            TypeReference rewrittenDeclaringType;
+            var genericParameter = ((GenericParameter) reference);
+            if (reference.DeclaringType == null)
+            {
+                rewrittenDeclaringType =
+                    Rewrite(targetAssembly, genericParameter.DeclaringMethod.DeclaringType, methodMap, lookupFake);
+                var originalMethod = genericParameter.DeclaringMethod.Resolve();
+
+                var rewrittenDeclaringTypeDefinition = rewrittenDeclaringType.Resolve();
+
+                //var originalMethodTableIndex = originalMethod.DeclaringType.Methods.IndexOf(originalMethod);
+                //for (var i = 0; i < originalMethodTableIndex; ++i)
+                //    if (originalMethod.DeclaringType.Methods[i].IsConstructor)
+                //        --originalMethodTableIndex;
+                //if (HasForwardingConstructorInMethodCollection(genericParameter, rewrittenDeclaringTypeDefinition))
+                //    ++originalMethodTableIndex;
+
+                //var targetMethod = rewrittenDeclaringTypeDefinition.Methods[originalMethodTableIndex];
+                var targetMethod = methodMap[originalMethod]; // TODO: Pray
+
+                if (genericParameter.Position < 0 || genericParameter.Position >= targetMethod.GenericParameters.Count)
+                    throw new InvalidOperationException("Unknown generic method type parameter");
+
+                return targetMethod.GenericParameters[genericParameter.Position];
+            }
+            else
+            {
+                rewrittenDeclaringType = Rewrite(targetAssembly, reference.DeclaringType, methodMap, lookupFake || useFakeForGenericParameters);
+                rewrittenDeclaringType = rewrittenDeclaringType.Resolve();
+
+                if (genericParameter.Position < 0 || genericParameter.Position >= rewrittenDeclaringType.GenericParameters.Count)
+                    throw new InvalidOperationException("Unknown generic type parameter");
+
+                if (!lookupFake && useFakeForGenericParameters)
+                    return rewrittenDeclaringType.GenericParameters[
+                        genericParameter.Position + rewrittenDeclaringType.GenericParameters.Count / 2];
+
+                return rewrittenDeclaringType.GenericParameters[genericParameter.Position];
+            }
+        }
+
+        public TypeReference ImportRecursively(AssemblyDefinition target, TypeReference reference)
+        {
+            if (reference == null)
+                return null;
+
+
+            if (reference.IsGenericParameter)
+                return reference;
+
+            if (reference.IsArray)
+                return ImportRecursively(target, reference.GetElementType()).MakeArrayType(((ArrayType)reference).Rank);
+ 
+            if (reference.IsByReference)
+                return ImportRecursively(target, reference.GetElementType()).MakeByReferenceType();
+
+            if (reference.IsPointer)
+                return ImportRecursively(target, reference.GetElementType()).MakePointerType();
+
+            if (reference.IsPinned)
+                return ImportRecursively(target, reference.GetElementType()).MakePinnedType();
+
+            if (reference.IsOptionalModifier)
+                return ImportRecursively(target, reference.GetElementType()).MakeOptionalModifierType(((OptionalModifierType)reference).ModifierType);
+
+            if (reference.IsSentinel)
+                return ImportRecursively(target, reference.GetElementType()).MakeSentinelType();
+
+            if (reference.IsRequiredModifier)
+                return ImportRecursively(target, reference.GetElementType()).MakeRequiredModifierType(((RequiredModifierType)reference).ModifierType);
+
+            if (reference is GenericInstanceType genericInstance)
+            {
+                return target.MainModule.Import(genericInstance.Resolve()).MakeGenericInstanceType(genericInstance
+                    .GenericArguments.Select(ga => ImportRecursively(target, ga)).ToArray());
+            }
+
+            return target.MainModule.Import(reference);
+        }
+
+        public TypeReference AddTickToName(AssemblyDefinition target, TypeReference reference)
+        {
+            if (reference == null)
+                return null;
+
+
+            if (reference.IsGenericParameter)
+                return reference;
+
+            if (reference.IsArray)
+                return AddTickToName(target, reference.GetElementType()).MakeArrayType(((ArrayType)reference).Rank);
+
+            if (reference.IsByReference)
+                return AddTickToName(target, reference.GetElementType()).MakeByReferenceType();
+
+            if (reference.IsPointer)
+                return AddTickToName(target, reference.GetElementType()).MakePointerType();
+
+            if (reference.IsPinned)
+                return AddTickToName(target, reference.GetElementType()).MakePinnedType();
+
+            if (reference.IsOptionalModifier)
+                return AddTickToName(target, reference.GetElementType()).MakeOptionalModifierType(((OptionalModifierType)reference).ModifierType);
+
+            if (reference.IsSentinel)
+                return AddTickToName(target, reference.GetElementType()).MakeSentinelType();
+
+            if (reference.IsRequiredModifier)
+                return AddTickToName(target, reference.GetElementType()).MakeRequiredModifierType(((RequiredModifierType)reference).ModifierType);
+
+            if (reference is GenericInstanceType genericInstance)
+            {
+                genericInstance.Name = $"{genericInstance.Name}`{reference.GenericParameters.Count}";
+                return genericInstance;
+            }
+
+            if (reference.HasGenericParameters)
+            {
+                reference.Name = $"{reference.Name}`{reference.GenericParameters.Count}";
+                return reference;
+            }
+
+            return reference;
         }
 
         static string RewriteGenericTypeName(TypeReference type)
