@@ -1,4 +1,4 @@
-﻿#define PEVERIFY
+#define PEVERIFY
 
 using System;
 using System.IO;
@@ -545,7 +545,23 @@ namespace NSubstitute.Weaver.Tests.MscorlibWeaver
                 "IL_0008: constrained. T",
                 "IL_000e: callvirt T Fake.__FakeHolder`1<__T>::get_Forward()",
                 "IL_0013: callvirt T A`1<__T>::Foo(T)",
-                "IL_0018: ret"
+                "IL_0018: stloc.0",
+                "IL_0019: ldtoken T",
+                "IL_001e: call System.Type System.Type::GetTypeFromHandle(System.RuntimeTypeHandle)",
+                "IL_0023: ldc.i4.1",
+                "IL_0024: newarr System.Object",
+                "IL_0029: dup",
+                "IL_002a: ldc.i4.0",
+                "IL_002b: ldc.i4.1",
+                "IL_002c: newarr __T",
+                "IL_0031: dup",
+                "IL_0032: ldc.i4.0",
+                "IL_0033: ldloc.0",
+                "IL_0034: stelem.any __T",
+                "IL_0039: stelem.ref",
+                "IL_003a: call System.Object System.Activator::CreateInstance(System.Type,System.Object[])",
+                "IL_003f: unbox.any T",
+                "IL_0044: ret",
             });
         }
 
