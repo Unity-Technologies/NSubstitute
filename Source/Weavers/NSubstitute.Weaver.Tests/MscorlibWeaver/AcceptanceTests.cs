@@ -1,23 +1,18 @@
-#define PEVERIFY
+﻿#define PEVERIFY
 
 using System;
-using System.CodeDom.Compiler;
-using System.Collections.Generic;
 using System.IO;
 using System.Linq;
+using System.Linq.Expressions;
 using System.Runtime.CompilerServices;
-using System.Text;
-using System.Threading.Tasks;
 using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CSharp;
-using Microsoft.CodeAnalysis.Emit;
-using Microsoft.CSharp;
 using Mono.Cecil;
 using Mono.Cecil.Cil;
 using Mono.Cecil.Rocks;
-using Mono.Collections.Generic;
 using NSubstitute.Weaver.MscorlibWeaver.MscorlibWrapper;
 using NUnit.Framework;
+using NUnit.Framework.Constraints;
 using Shouldly;
 
 namespace NSubstitute.Weaver.Tests.MscorlibWeaver
@@ -25,19 +20,27 @@ namespace NSubstitute.Weaver.Tests.MscorlibWeaver
     [TestFixture]
     class AcceptanceTests
     {
-        const string pathPrefix = @"c:\users\henriks\documents\visual studio 2017\Projects\FakeMscorlibRunner\FakeMscorlibRunner";
+        const string pathPrefix = ".";
 
         [Test]
-        public void CopyEverything()
+        public void Copy_NoSkippedTypes_PatchesAllTypesFromOriginalAssembly()
         {
-            var mscorlib = AssemblyDefinition.ReadAssembly(typeof(void).Assembly.Location);
-            var nsubstitute = AssemblyDefinition.ReadAssembly(typeof(Substitute).Assembly.Location);
-            var target = AssemblyDefinition.CreateAssembly(new AssemblyNameDefinition("mscorlib.fake", mscorlib.Name.Version), mscorlib.MainModule.Name, ModuleKind.Dll);
+            var mscorlibAssembly = AssemblyDefinition.ReadAssembly(typeof(void).Assembly.Location);
+            var nsubstituteAssembly = AssemblyDefinition.ReadAssembly(typeof(Substitute).Assembly.Location);
+            var patchedAssembly = AssemblyDefinition.CreateAssembly(new AssemblyNameDefinition(
+                "mscorlib.fake", mscorlibAssembly.Name.Version),
+                mscorlibAssembly.MainModule.Name,
+                ModuleKind.Dll);
 
-            var copier = new Copier(new ProcessTypeResolver(mscorlib));
-            copier.Copy(mscorlib, ref target, nsubstitute, mscorlib.MainModule.Types.Select(t => t.FullName).ToArray());
+            var copier = new Copier(new ProcessTypeResolver(mscorlibAssembly));
+            copier.Copy(mscorlibAssembly, ref patchedAssembly, nsubstituteAssembly,
+                mscorlibAssembly.MainModule.Types.Select(t => t.FullName).ToArray());
 
-            target.Write(Path.Combine(pathPrefix, "fake.mscorlib.dll"));
+            var allOriginalTypes = mscorlibAssembly.MainModule.Types.Select(t => t.Name);
+            var allPatchedTypes = patchedAssembly.MainModule.Types.Select(t => t.Name);
+            allOriginalTypes.ShouldBe(allPatchedTypes, ignoreOrder: true);
+
+            patchedAssembly.Write(Path.Combine(pathPrefix, "fake.mscorlib.dll"));
         }
 
         static string GetMethodName([CallerMemberName] string method = null)
@@ -47,54 +50,102 @@ namespace NSubstitute.Weaver.Tests.MscorlibWeaver
 
         [Test]
         [Category("NG")]
-        public void InnerTypeTest()
+        public void MethodWillReturnPatchedInnerType()
         {
-            CreateAssemblyFromCode(@"public class A { public class B { public int X; } public B Foo(B b) { return b; } }", out AssemblyDefinition target, out AssemblyDefinition mscorlib);
+            const string code = @"public class A { public class B { public int X; } public B Foo(B b) { return b; } }";
+            var originalAssembly = CreateAssembly(code);
+            var patchedAssembly = PatchAssembly(originalAssembly);
 
-            var a = target.MainModule.Types.Single(t => t.FullName == "Fake.A");
-            a.NestedTypes.Count.ShouldBe(1);
-            var method = a.Methods.Single(m => m.Name == "Foo");
-            var instruction = method.Body.Instructions.First(i => i.OpCode == OpCodes.Callvirt);
+            var patchedTypeA = patchedAssembly.MainModule.GetType("Fake.A");
+            patchedTypeA.NestedTypes.ShouldContainOnly(1);
+
+            var allFooMethods = patchedTypeA.Methods.Where(m => m.Name == "Foo");
+            allFooMethods.ShouldContainOnly(1);
+
+            var instruction = allFooMethods.First().Body.Instructions.First(i => i.OpCode == OpCodes.Callvirt);
             instruction.Operand.ToString().ShouldBe("A/B Fake.A/B::Fake.A/B.get__FakeForwardProp_A_slash_B()");
-                
         }
 
         [Test]
         [Category("NG")]
-        public void PrivateInterfaceImplementationTest()
+        public void PrivateInterfaceImplementation_HasOverride()
         {
-            CreateAssemblyFromCode(@"public interface IA { void Foo(); } public interface IB { int Foo(); } public class A : IA, IB { public int Foo() { return 0; } void IA.Foo() {} }", out AssemblyDefinition target, out AssemblyDefinition mscorlib);
+            var code = @"public interface IA { void Foo(); } 
+                         public interface IB { int Foo(); } 
+                         public class A : IA, IB 
+                         { 
+                             public int Foo() { return 0; } 
+                             void IA.Foo() {} 
+                         }";
+            var originalAssembly = CreateAssembly(code);
+            var patchedAssembly = PatchAssembly(originalAssembly);
 
-            var a = target.MainModule.Types.Single(t => t.FullName == "Fake.A");
-            var methods = a.Methods.Where(m => m.Name.Contains("Foo")).ToList();
+            var patchedTypeA = patchedAssembly.MainModule.GetType("Fake.A");
+            var allFooMethods = patchedTypeA.Methods.Where(m => m.Name.Contains("Foo"));
 
-            var expectedMethod = "System.Void Fake.A::Fake.IA.Foo()";
-            Assert.That(methods.Select(m => m.FullName), Contains.Item(expectedMethod));
+            var expectedMethods = new[]
+            {
+                "System.Void Fake.A::Fake.IA.Foo()",
+                "System.Int32 Fake.A::Foo()"
+            };
+            allFooMethods.ShouldHaveMembers(expectedMethods);
 
-            var method = methods.Single(m => m.FullName == expectedMethod);
-            Assert.That(method.Overrides, Has.Count.EqualTo(1));
-            Assert.That(method.Overrides[0].FullName, Is.EqualTo("System.Void Fake.IA::Foo()"));
-            ((MethodReference)method.Body.Instructions.Single(i => i.OpCode == OpCodes.Callvirt).Operand).FullName.ShouldBe("System.Void IA::Foo()");
+            var fooMethodWithOverride = allFooMethods.Single(m => m.FullName == "System.Void Fake.A::Fake.IA.Foo()");
+            fooMethodWithOverride.Overrides.ShouldHaveMembers(new[] { "System.Void Fake.IA::Foo()" });
+
+            fooMethodWithOverride.ShouldContainVirtualMethodCall("System.Void IA::Foo()");
         }
 
         [Test]
         [Category("NG")]
-        public void TypeGetsFakeHolderTest()
+        public void PatchedTypeOf_SimplePublicClass_ImplementsFakeHolderInterface()
         {
-            CreateAssemblyFromCode(@"public class A {}", out AssemblyDefinition target, out AssemblyDefinition mscorlib);
+            var code = @"public class A {}";
+            var originalAssembly = CreateAssembly(code);
+            var patchedAssembly = PatchAssembly(originalAssembly);
 
-            var a = target.MainModule.Types.Single(t => t.FullName == "Fake.A");
-            a.Interfaces.Count.ShouldBe(1);
+            var patchedTypeA = patchedAssembly.MainModule.GetType("Fake.A");
+            patchedTypeA.ShouldNotBeNull();
+
+            patchedTypeA.Interfaces.ShouldHaveMembers(new[] { "Fake.__FakeHolder`1<A>" });
         }
 
         [Test]
         [Category("NG")]
-        public void GenericTypeGetsFakeHolderTest()
+        public void PatchedTypeOf_SimplePublicClass_HasFakeFieldAndCtor()
         {
-            CreateAssemblyFromCode(@"public interface IA<T> {} public class A<T> : IA<T> {}", out AssemblyDefinition target, out AssemblyDefinition mscorlib);
+            var code = @"public class A {}";
+            var originalAssembly = CreateAssembly(code);
+            var patchedAssembly = PatchAssembly(originalAssembly);
 
-            var a = target.MainModule.Types.Single(t => t.FullName == "Fake.A`2");
-            a.Interfaces.ShouldBeEmpty();
+            var patchedTypeA = patchedAssembly.MainModule.GetType("Fake.A");
+            patchedTypeA.ShouldNotBeNull();
+
+            patchedTypeA.BaseType.ShouldBeSameType(patchedAssembly.MainModule.TypeSystem.Object);
+            patchedTypeA.Fields.ShouldContainOnly(1);
+
+            var originalTypeA = originalAssembly.MainModule.GetType("A");
+            patchedTypeA.ShouldHaveForwardField(originalTypeA);
+            patchedTypeA.ShouldHaveForwardConstructor(originalTypeA);
+        }
+
+        [Test]
+        [Category("NG")]
+        public void PatchedTypeOf_GenericType_ImplementsFakeHolderInterface()
+        {
+            var code = @"public interface IA<T> {} 
+                         public class A<T> : IA<T> {}";
+            var originalAssembly = CreateAssembly(code);
+            var patchedAssembly = PatchAssembly(originalAssembly);
+
+            var patchedTypeA = patchedAssembly.MainModule.GetType("Fake.A`2");
+            patchedTypeA.ShouldNotBeNull();
+
+            patchedTypeA.Interfaces.ShouldHaveMembers(new[]
+            {
+                "This should contain a proper interface signature",
+                "This should contain a proper interface signature"
+            });
         }
 
         [Test]
@@ -119,139 +170,124 @@ namespace NSubstitute.Weaver.Tests.MscorlibWeaver
 
         [Test]
         [Category("NG")]
-        public void SimplePublicClassGetsFakeFieldAndCtor()
+        public void PatchedTypeOf_SimplePublicClassWithGenerics_HasFakeFieldAndCtor()
         {
-            CreateAssemblyFromCode(@"public class A {}", out AssemblyDefinition target, out AssemblyDefinition mscorlib);
+            var code = @"public class A<T, U> {}";
+            var originalAssembly = CreateAssembly(code);
+            var patchedAssembly = PatchAssembly(originalAssembly);
 
-            target.MainModule.Types.ShouldContain(t => t.Name == "A");
+            var patchedTypeA = patchedAssembly.MainModule.GetType("Fake.A`4");
+            patchedTypeA.ShouldNotBeNull();
+            patchedTypeA.GenericParameters.ShouldHaveMembers(new[] { "T", "U", "__T", "__U" });
 
-            var targetType = target.MainModule.Types.Single(t => t.Name == "A");
-            targetType.FullName.ShouldBe("Fake.A");
-            targetType.BaseType.ShouldBeSameType(target.MainModule.TypeSystem.Object);
-            targetType.Fields.Count.ShouldBe(1);
-
-            var originalType = mscorlib.MainModule.Types.Single(t => t.Name == "A");
-            targetType.ShouldHaveForwardField(originalType);
-            targetType.ShouldHaveForwardConstructor(originalType);
+            var originalType = originalAssembly.MainModule.GetType("A`2");
+            var genericParams = patchedTypeA.GenericParameters.Cast<TypeReference>().Skip(2).ToArray();
+            var instanceType = originalType.MakeGenericInstanceType(genericParams);
+            patchedTypeA.ShouldHaveForwardField(instanceType);
+            patchedTypeA.ShouldHaveForwardConstructor(instanceType);
         }
 
         [Test]
         [Category("NG")]
-        public void SimplePublicClassWithGenericsGetsFakeFieldAndCtor()
+        public void PatchedTypeOf_PublicClassWithGenericTypeConstraints_HasConstraints()
         {
-            CreateAssemblyFromCode(@"public class A<T, U> {}", out AssemblyDefinition target, out AssemblyDefinition mscorlib);
+            var code = @"public class A<U> where U : System.Collections.Generic.List<U> {}";
+            var originalAssembly = CreateAssembly(code);
+            var patchedAssembly = PatchAssembly(originalAssembly);
 
-            target.MainModule.Types.ShouldContain(t => t.Name == "A`2");
+            var patchedTypeA = patchedAssembly.MainModule.GetType("Fake.A`2");
+            patchedTypeA.ShouldNotBeNull();
 
-            var targetType = target.MainModule.Types.Single(t => t.Name == "A`2");
-            targetType.FullName.ShouldBe("Fake.A`2");
-            targetType.GenericParameters.Select(gp => gp.Name).ShouldBe(new[] { "T", "U" });
+            patchedTypeA.GenericParameters.ShouldHaveMembers(new[] { "U", "__U" });
+            patchedTypeA.GenericParameters[0].Constraints.ShouldHaveMembers(new[] { "System.Collections.Generic.List`1<U>" });
+        }
 
-            var originalType = mscorlib.MainModule.Types.Single(t => t.Name == "A`2");
-            var instanceType = originalType.MakeGenericInstanceType(targetType.GenericParameters.Cast<TypeReference>().ToArray());
-            targetType.ShouldHaveForwardField(instanceType);
-            targetType.ShouldHaveForwardConstructor(instanceType);
+        [TestCase("public enum A {}", TestName = "PublicEnum_IsNotProcessed")]
+        [TestCase("class A {}", TestName = "PrivateClass_IsNotProcessed")]
+        [Category("NG")]
+        public void TypesThatAreNotProcessed(string code)
+        {
+            var originalAssembly = CreateAssembly(code);
+            var patchedAssembly = PatchAssembly(originalAssembly);
+
+            patchedAssembly.MainModule.Types.ShouldNotContain(t => t.Name == "A");
+        }
+
+        [TestCase("public class A {  protected void Foo() { } }", TestName = "ProtectedMethod_IsNotProcessed")]
+        [TestCase("public class A {  internal void Foo() { } }", TestName = "InternalMethod_IsNotProcessed")]
+        [TestCase("public class A {  private void Foo() { } }", TestName = "PrivateMethod_IsNotProcessed")]
+        [TestCase("public class A {  void Foo() { } }", TestName = "MethodWithNoExplicitModifier_IsNotProcessed")]
+        [Category("NG")]
+        public void MethodsThatAreNotProcessed(string code)
+        {
+            var originalAssembly = CreateAssembly(code);
+            var patchedAssembly = PatchAssembly(originalAssembly);
+
+            var patchedTypeA = patchedAssembly.MainModule.GetType("Fake.A");
+            patchedTypeA.Methods.ShouldNotContain(m => m.Name == "Foo");
         }
 
         [Test]
         [Category("NG")]
-        public void PublicClassWithGenericTypeConstraints()
+        public void PatchedTypeOF_PublicClassWithGenericTypeConstraintInTypeConstraint_HasConstraints()
         {
-            CreateAssemblyFromCode(@"public class A<U> where U : System.Collections.Generic.List<U> {}", out AssemblyDefinition target, out AssemblyDefinition mscorlib);
+            var code = @"public class A<U> where U : System.Collections.Generic.List<System.Collections.Generic.List<U>> {}";
+            var originalAssembly = CreateAssembly(code);
+            var patchedAssembly = PatchAssembly(originalAssembly);
 
-            target.MainModule.Types.ShouldContain(t => t.Name == "A`1");
+            var patchedTypeA = patchedAssembly.MainModule.GetType("Fake.A`2");
+            patchedTypeA.ShouldNotBeNull();
 
-            var targetType = target.MainModule.Types.Single(t => t.Name == "A`1");
-            targetType.FullName.ShouldBe("Fake.A`1");
-            targetType.GenericParameters[0].Constraints.ShouldNotBeEmpty();
-            targetType.GenericParameters[0].Constraints[0].FullName.ShouldBe("System.Collections.Generic.List`1<U>");
+            patchedTypeA.GenericParameters.ShouldHaveMembers(new[] { "U", "__U" });
+            patchedTypeA.GenericParameters[0].Constraints.ShouldHaveMembers(new[] { "System.Collections.Generic.List`1<System.Collections.Generic.List`1<U>>" });
         }
 
         [Test]
         [Category("NG")]
-        public void PrivateClassIsntProcessed()
+        public void PatchedMethod_ParameterMarkedWithMarshalAs_HasFieldMarshalSetToFalse()
         {
-            CreateAssemblyFromCode(@"class A {}", out AssemblyDefinition target, out AssemblyDefinition mscorlib);
+            var code =
+                @"public class A { public void Foo([System.Runtime.InteropServices.MarshalAs(System.Runtime.InteropServices.UnmanagedType.BStr)] string x) {} }";
+            var originalAssembly = CreateAssembly(code);
+            var patchedAssembly = PatchAssembly(originalAssembly);
 
-            target.MainModule.Types.ShouldNotContain(t => t.Name == "A");
-        }
-
-        [Test]
-        [Category("NG")]
-        public void PublicClassWithGenericTypeConstraintInTypeConstraint()
-        {
-            CreateAssemblyFromCode(@"public class A<U> where U : System.Collections.Generic.List<System.Collections.Generic.List<U>> {}", out AssemblyDefinition target, out AssemblyDefinition mscorlib);
-
-            target.MainModule.Types.ShouldContain(t => t.Name == "A`1");
-
-            var targetType = target.MainModule.Types.Single(t => t.Name == "A`1");
-            targetType.FullName.ShouldBe("Fake.A`1");
-            targetType.GenericParameters[0].Constraints.ShouldNotBeEmpty();
-            targetType.GenericParameters[0].Constraints[0].FullName.ShouldBe("System.Collections.Generic.List`1<System.Collections.Generic.List`1<U>>");
-        }
-
-        [Test]
-        [Category("NG")]
-        public void EnumIsNotProcessed()
-        {
-            CreateAssemblyFromCode(@"public enum A {}", out AssemblyDefinition target, out AssemblyDefinition mscorlib);
-
-            target.MainModule.Types.ShouldNotContain(t => t.Name == "A");
-        }
-
-        [Test]
-        [Category("NG")]
-        public void DontRewriteInternalMethods()
-        {
-            CreateAssemblyFromCode(@"public class A { internal void Foo() { } }", out AssemblyDefinition target, out AssemblyDefinition mscorlib);
-
-            var a = target.MainModule.Types.Single(t => t.Name == "A");
-            a.Methods.Select(m => m.Name).ShouldNotContain("Foo");
-        }
-
-        [Test]
-        [Category("NG")]
-        public void HasFieldMarshalParameter()
-        {
-            CreateAssemblyFromCode(@"public class A { public void Foo([System.Runtime.InteropServices.MarshalAs(System.Runtime.InteropServices.UnmanagedType.BStr)] string x) {} }", out AssemblyDefinition target, out AssemblyDefinition mscorlib);
-
-            var a = target.MainModule.Types.Single(t => t.FullName == "Fake.A");
-            var foo = a.Methods.Single(m => m.Name == "Foo");
-
-            var p = foo.Parameters.Single();
-            p.HasFieldMarshal.ShouldBeFalse();
-        }
-
-        [Test]
-        [Category("NG")]
-        public void SimpleInterfaceIsTranslated()
-        {
-            CreateAssemblyFromCode(@"public interface IA {}", out AssemblyDefinition target, out AssemblyDefinition mscorlib);
+            var patchedTypeA = patchedAssembly.MainModule.GetType("Fake.A");
+            var fooMethod = patchedTypeA.Methods.Single(m => m.Name == "Foo");
             
-            target.MainModule.Types.ShouldContain(t => t.Name == "IA");
+            var fooParameter = fooMethod.Parameters.Single();
+            fooParameter.HasFieldMarshal.ShouldBeFalse();
+        }
 
-            var targetType = target.MainModule.Types.Single(t => t.Name == "IA");
-            targetType.FullName.ShouldBe("Fake.IA");
-            targetType.GetConstructors().ShouldBeEmpty();
-            targetType.Fields.ShouldBeEmpty();
+        [Test]
+        [Category("NG")]
+        public void Translated_SimpleInterface_HasNoCtorAndFields()
+        {
+            var code = @"public interface IA {}";
+            var originalAssembly = CreateAssembly(code);
+            var patchedAssembly = PatchAssembly(originalAssembly);
+
+            var patchedInterfaceAI = patchedAssembly.MainModule.GetType("Fake.IA");
+            patchedInterfaceAI.ShouldNotBeNull();
+            
+            patchedInterfaceAI.GetConstructors().ShouldBeEmpty();
+            patchedInterfaceAI.Fields.ShouldBeEmpty();
         }
 
         [Test]
         [Category("NG")]
         public void SimpleInterfaceImplementingInterfaceAreBothTranslatedAndImplementsPreserved()
         {
-            CreateAssemblyFromCode(@"public interface IA {} public interface IB : IA {}", out AssemblyDefinition target, out AssemblyDefinition mscorlib);
-
-            target.MainModule.Types.ShouldContain(t => t.Name == "IA");
-            target.MainModule.Types.ShouldContain(t => t.Name == "IB");
-
-            var parentType = target.MainModule.Types.Single(t => t.Name == "IA");
-            parentType.FullName.ShouldBe("Fake.IA");
-
-            var targetType = target.MainModule.Types.Single(t => t.Name == "IB");
-            targetType.FullName.ShouldBe("Fake.IB");
-
-            targetType.Interfaces[1].ShouldBeSameType(parentType);
+            var code = @"public interface IA {} public interface IB : IA {}";
+            var originalAssembly = CreateAssembly(code);
+            var patchedAssembly = PatchAssembly(originalAssembly);
+            
+            var patchedParentInterface = patchedAssembly.MainModule.GetType("Fake.IA");
+            patchedParentInterface.ShouldNotBeNull();
+            var patchedChildInterface = patchedAssembly.MainModule.GetType("Fake.IB");
+            patchedChildInterface.ShouldNotBeNull();
+            
+            patchedChildInterface.Interfaces.ShouldContainOnly(2);
+            patchedChildInterface.Interfaces[1].ShouldBeSameType(patchedParentInterface);
         }
 
         [Test]
@@ -260,17 +296,18 @@ namespace NSubstitute.Weaver.Tests.MscorlibWeaver
         {
             CreateAssemblyFromCode(@"public interface IA<T> {} public interface IB : IA<int> {}", out AssemblyDefinition target, out AssemblyDefinition mscorlib);
 
-            target.MainModule.Types.ShouldContain(t => t.Name == "IA`1");
+            target.MainModule.Types.ShouldContain(t => t.Name == "IA`2");
             target.MainModule.Types.ShouldContain(t => t.Name == "IB");
 
-            var parentType = target.MainModule.Types.Single(t => t.Name == "IA`1");
-            parentType.FullName.ShouldBe("Fake.IA`1");
+            var parentType = target.MainModule.Types.Single(t => t.Name == "IA`2");
+            parentType.FullName.ShouldBe("Fake.IA`2");
 
             var targetType = target.MainModule.Types.Single(t => t.Name == "IB");
             targetType.FullName.ShouldBe("Fake.IB");
 
             targetType.Interfaces.Count.ShouldBe(2);
-            targetType.Interfaces[1].ShouldBeSameType(parentType.MakeGenericInstanceType(mscorlib.MainModule.TypeSystem.Int32));
+            targetType.Interfaces[1].ShouldBeSameType(
+                parentType.MakeGenericInstanceType(mscorlib.MainModule.TypeSystem.Int32));
         }
 
         [Test]
@@ -330,7 +367,7 @@ namespace NSubstitute.Weaver.Tests.MscorlibWeaver
         public void WrapMethod(string program, string typeName, string methodName, int parameterCount, string suffix, params string[] result)
         {
             CreateAssemblyFromCode(program, out AssemblyDefinition target, out AssemblyDefinition mscorlib, GetMethodName() + suffix);
-            
+
             target.MainModule.Types.ShouldContain(t => t.FullName == "Fake." + typeName);
 
             var targetType = target.MainModule.Types.Single(t => t.FullName == "Fake." + typeName);
@@ -345,9 +382,9 @@ namespace NSubstitute.Weaver.Tests.MscorlibWeaver
         [Category("NG")]
         public void AbstractClassGeneratesWrapperClass()
         {
-            CreateAssemblyFromCode("public abstract class B { public abstract B Baz(); public B Bar(B b) { return b; } } public abstract class A : B { public virtual A Foo(A a, int b) { return a; } }", out AssemblyDefinition target, out AssemblyDefinition mscorlib);
+            CreateAssemblyFromCode("public abstract class B { public abstract B Baz(); public B Bar(B b) { return b; } } public abstract class A : B { public virtual A Foo(A a, int b) { return a; } }", out AssemblyDefinition patched, out AssemblyDefinition original);
 
-            var b = target.MainModule.Types.Single(t => t.FullName == "Fake.B");
+            var b = patched.MainModule.Types.Single(t => t.FullName == "Fake.B");
 
             var bar = b.Methods.Single(m => m.Name == "Bar");
             bar.ReturnType.ShouldBeSameType(b);
@@ -401,7 +438,7 @@ namespace NSubstitute.Weaver.Tests.MscorlibWeaver
             CreateAssemblyFromCode("public interface IA<T> {} public interface IB<T> : IA<T> {} public class B : IB<int> {}", out AssemblyDefinition target, out AssemblyDefinition mscorlib);
 
             var ib = target.MainModule.Types.Single(t => t.FullName == "Fake.IB`1");
-            ib.Properties.Select(p => p.Name).ShouldBe(new[]{"_FakeForwardProp_IB_tick_1"});
+            ib.Properties.Select(p => p.Name).ShouldBe(new[] { "_FakeForwardProp_IB_tick_1" });
 
             var b = target.MainModule.Types.Single(t => t.FullName == "Fake.B");
             b.Properties.Select(p => p.Name).ShouldBe(new[] { "Fake.IB<System.Int32>._FakeForwardProp_IB_tick_1", "Fake.IA<System.Int32>._FakeForwardProp_IA_tick_1", "Fake.__FakeHolder<global::B>.Forward", "Fake.__FakeHolder<global::IB`1<System.Int32>>.Forward", "Fake.__FakeHolder<global::IA`1<System.Int32>>.Forward" });
@@ -414,7 +451,7 @@ namespace NSubstitute.Weaver.Tests.MscorlibWeaver
             CreateAssemblyFromCode("public interface IA<T> {} public class A : IA<int>, IA<float> {}", out AssemblyDefinition target, out AssemblyDefinition mscorlib);
 
             var a = target.MainModule.Types.Single(t => t.FullName == "Fake.A");
-            a.Properties.Select(p => p.Name).ShouldBe(new []{"Fake.IA<System.Int32>._FakeForwardProp_IA_tick_1", "Fake.IA<System.Single>._FakeForwardProp_IA_tick_1", "Fake.__FakeHolder<global::A>.Forward", "Fake.__FakeHolder<global::IA`1<System.Int32>>.Forward", "Fake.__FakeHolder<global::IA`1<System.Single>>.Forward"});
+            a.Properties.Select(p => p.Name).ShouldBe(new[] { "Fake.IA<System.Int32>._FakeForwardProp_IA_tick_1", "Fake.IA<System.Single>._FakeForwardProp_IA_tick_1", "Fake.__FakeHolder<global::A>.Forward", "Fake.__FakeHolder<global::IA`1<System.Int32>>.Forward", "Fake.__FakeHolder<global::IA`1<System.Single>>.Forward" });
 
             var fakeImplType = target.MainModule.Types.Single(t => t.FullName == "Fake._FakeImpl_IA`1");
             var prop = fakeImplType.Properties.Single(p => p.Name == "Fake.IA<T>._FakeForwardProp_IA_tick_1");
@@ -626,77 +663,44 @@ namespace NSubstitute.Weaver.Tests.MscorlibWeaver
 #endif
         }
 
-        static void CreateAssemblyFromCode(string program, out AssemblyDefinition target, out AssemblyDefinition mscorlib, [CallerMemberName] string mscorlibAssemblyName = null)
+        static AssemblyDefinition CreateAssembly(string program, [CallerMemberName] string assemblyName = null)
         {
             var st = CSharpSyntaxTree.ParseText(program);
-            var options = new CSharpCompilationOptions(OutputKind.DynamicallyLinkedLibrary, optimizationLevel: OptimizationLevel.Debug, allowUnsafe: true);
-            var csc = CSharpCompilation.Create($"{mscorlibAssemblyName}InMemoryAssembly", options: options, syntaxTrees: new[] { st }, references: new[]
-            {
-                MetadataReference.CreateFromFile(typeof(Enum).Assembly.Location)
-            });
+            var compilationOptions = new CSharpCompilationOptions(OutputKind.DynamicallyLinkedLibrary,
+                optimizationLevel: OptimizationLevel.Debug,
+                allowUnsafe: true);
 
-            mscorlib = EmitAndReadAssembly(csc, $"{mscorlibAssemblyName}InMemoryAssembly.dll");
-            var nsubstitute = AssemblyDefinition.ReadAssembly(typeof(Substitute).Assembly.Location);
-            target = AssemblyDefinition.CreateAssembly(new AssemblyNameDefinition($"{mscorlibAssemblyName}.fake", mscorlib.Name.Version), mscorlib.MainModule.Name, ModuleKind.Dll);
+            var csc = CSharpCompilation.Create($"{assemblyName}InMemoryAssembly",
+                options: compilationOptions,
+                syntaxTrees: new[] { st },
+                references: new[] { MetadataReference.CreateFromFile(typeof(Enum).Assembly.Location) });
+
+            return EmitAndReadAssembly(csc, $"{assemblyName}InMemoryAssembly.dll");
+        }
+
+        static AssemblyDefinition PatchAssembly(AssemblyDefinition original)
+        {
+            var patched = AssemblyDefinition.CreateAssembly(new AssemblyNameDefinition($"{original.Name}.fake",
+                    original.Name.Version),
+                original.MainModule.Name, ModuleKind.Dll);
 #if PEVERIFY
-            ((DefaultAssemblyResolver)target.MainModule.AssemblyResolver).AddSearchDirectory(pathPrefix);
+            ((DefaultAssemblyResolver)patched.MainModule.AssemblyResolver).AddSearchDirectory(pathPrefix);
 #endif
 
-            var copier = new Copier(new ProcessTypeResolver(mscorlib), tr => tr.Namespace == "System" || tr.Namespace.StartsWith("System."));
-            copier.Copy(mscorlib, ref target, nsubstitute, mscorlib.MainModule.Types.Select(t => t.FullName).ToArray());
+            var copier = new Copier(new ProcessTypeResolver(original),
+                skipType: tr => tr.Namespace == "System" || tr.Namespace.StartsWith("System."));
+            copier.Copy(original, ref patched, null, original.MainModule.Types.Select(t => t.FullName).ToArray());
 
-            WriteForPeVerify(target, mscorlibAssemblyName);
-        }
-    }
+            WriteForPeVerify(patched, original.Name.ToString());
 
-    static class ShouldlyExtensions
-    {
-        public static void ShouldBeSameType(this TypeReference actual, TypeReference expected)
-        {
-            if (actual is GenericParameter)
-            {
-                expected.ShouldBeOfType<GenericParameter>();
-                actual.FullName.ShouldBe(expected.FullName);
-                return;
-            }
-
-            actual.FullName.ShouldBe(expected.FullName);
-            actual.Resolve().Scope.Name.ShouldBe(expected.Resolve().Scope.Name);
+            return patched;
         }
 
-        public static void ShouldBeSameMethod(this MethodReference actual, MethodReference expected)
+        static void CreateAssemblyFromCode(string program, out AssemblyDefinition patched, out AssemblyDefinition original, [CallerMemberName] string originalAssemblyName = null)
         {
-            actual.FullName.ShouldBe(expected.FullName);
-            //actual.ReturnType.ShouldBeSameType(expected.ReturnType);
-            //actual.Parameters.Count.ShouldBe(expected.Parameters.Count);
-            //for (var i = 0; i < actual.Parameters.Count; ++i)
-            //{
-            //    actual.Parameters[i].Name.ShouldBe(expected.Parameters[i].Name);
-            //    actual.Parameters[i].ParameterType.ShouldBeSameType(expected.Parameters[i].ParameterType);
-            //}
-        }
+            original = CreateAssembly(program, originalAssemblyName);
 
-        public static void ShouldHaveForwardField(this TypeDefinition actual, TypeReference expectedFieldType)
-        {
-            actual.Fields.ShouldContain(f => f.Name == "__fake_forward");
-            var forwardField = actual.Fields.Single(f => f.Name == "__fake_forward");
-            forwardField.FieldType.ShouldBeSameType(expectedFieldType);
-        }
-
-        public static void ShouldHaveForwardConstructor(this TypeDefinition actual, TypeReference expectedType)
-        {
-            var constructors = actual.GetConstructors().Where(c => c.Parameters.Count == 1).ToList();
-            constructors.ShouldNotBeEmpty();
-
-            var forwardCandidates = constructors.Where(c => c.Parameters.Any(p => p.ParameterType.FullName == expectedType.FullName)).ToList();
-            forwardCandidates.ShouldNotBeEmpty();
-
-            forwardCandidates.ForEach(fc => fc.Parameters[0].ParameterType.ShouldBeSameType(expectedType));
-        }
-
-        public static IEnumerable<string> InstructionsToString(this Collection<Instruction> instructions)
-        {
-            return instructions.Select(i => i.ToString());
+            patched = PatchAssembly(original);
         }
     }
 }
