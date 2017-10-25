@@ -1,8 +1,8 @@
 # These files are text and should be normalized (convert crlf => lf)
-*.cs      text diff=csharp
+*.cs      text diff=csharp eol=lf
 *.xaml    text
-*.csproj  text
-*.sln     text
+*.csproj  text eol=crlf
+*.sln     text eol=crlf
 *.tt      text
 *.ps1     text
 *.cmd     text
