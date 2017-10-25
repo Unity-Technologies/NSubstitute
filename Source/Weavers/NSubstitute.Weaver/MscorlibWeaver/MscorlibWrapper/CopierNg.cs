@@ -780,7 +780,12 @@ namespace NSubstitute.Weaver.MscorlibWeaver.MscorlibWrapper
                 typeDefinition.GenericParameters[i].Constraints.Add(fakeHolder.MakeGenericInstanceType(typeDefinition.GenericParameters[type.GenericParameters.Count + i]));
             }
 
-            var importedType = type.HasGenericParameters ? target.MainModule.Import(type).MakeGenericInstanceType(typeDefinition.GenericParameters.Skip(type.GenericParameters.Count).ToArray()) : target.MainModule.Import(type);
+            var importedType = type.HasGenericParameters
+                ? rewriter.ImportRecursively(target,
+                    type.MakeGenericInstanceType(typeDefinition.GenericParameters.Skip(type.GenericParameters.Count)
+                        .ToArray()))
+                : rewriter.ImportRecursively(target, type);
+
             var fakeHolderInstance = fakeHolder.MakeGenericInstanceType(importedType);
             typeDefinition.Interfaces.Add(fakeHolderInstance);
 

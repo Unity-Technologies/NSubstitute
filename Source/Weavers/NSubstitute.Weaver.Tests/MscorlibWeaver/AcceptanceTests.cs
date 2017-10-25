@@ -478,28 +478,7 @@ namespace NSubstitute.Weaver.Tests.MscorlibWeaver
         [Category("NG")]
         public void ReferenceFromGenericTypeToGenericInterface()
         {
-            AssemblyDefinition original = null, target = null;
-            try
-            {
-                CreateAssemblyFromCode("public interface IA<T> {} public class A<T> : IA<T> {}",
-                    out AssemblyDefinition rewrittenTarget, out original);
-            }
-            catch (Exception)
-            {
-            }
-            try
-            {
-                CreateAssemblyFromCode(
-                    "namespace Fake { public interface IA<T, __T> {} public class A<T, __T> : IA<T, __T> {} }",
-                    out AssemblyDefinition rewrittenTarget2, out target);
-            }
-            catch (Exception)
-            {
-                
-            }
-
-            original.ShouldNotBeNull();
-            target.ShouldNotBeNull();
+            CreateAssemblyFromCode("public interface IA<T> {} public class A<T> : IA<T> {}", out AssemblyDefinition target, out AssemblyDefinition original);
 
             var interfaceType = original.MainModule.Types.Single(t => t.FullName == "IA`1");
             var implType = original.MainModule.Types.Single(t => t.FullName == "A`1");
