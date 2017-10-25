@@ -1,7 +1,10 @@
 using System;
+using System.Collections.Generic;
+using System.Linq;
 using System.Reflection;
 using Mono.Cecil;
 using Mono.Cecil.Cil;
+using Mono.Collections.Generic;
 
 namespace Unity.Cecil.Visitor
 {
@@ -254,8 +257,11 @@ namespace Unity.Cecil.Visitor
 
         protected virtual void Visit(ModuleDefinition moduleDefinition, Context context)
         {
-            foreach (var typeDefinition in moduleDefinition.Types)
+            var listOfTypes = moduleDefinition.Types.ToList();
+            listOfTypes.Sort((x, y) => TypeReferenceExtensions.InheritanceChainLength(x)
+                - TypeReferenceExtensions.InheritanceChainLength(y));
 
+            foreach (var typeDefinition in listOfTypes)
                 Visit(typeDefinition, context.Member(moduleDefinition));
         }
 

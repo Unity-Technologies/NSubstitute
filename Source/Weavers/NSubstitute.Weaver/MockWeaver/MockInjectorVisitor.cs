@@ -96,6 +96,10 @@ namespace NSubstitute.Weaver
             else
             {
                 ctor = ctors.First();
+                if (ctor.Body == null)
+                {
+                    ctor.Body = new MethodBody(ctor);
+                }
                 ctor.IsPublic = true;
             }
 
