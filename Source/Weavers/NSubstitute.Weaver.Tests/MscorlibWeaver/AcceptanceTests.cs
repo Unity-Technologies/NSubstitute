@@ -21,6 +21,7 @@ namespace NSubstitute.Weaver.Tests.MscorlibWeaver
     class AcceptanceTests
     {
         const string pathPrefix = ".";
+        //TODO: Add a test Generic type with non generic nested type (NG test).
 
         [Test]
         public void Copy_NoSkippedTypes_PatchesAllTypesFromOriginalAssembly()
@@ -125,10 +126,10 @@ namespace NSubstitute.Weaver.Tests.MscorlibWeaver
             var patchedAssembly = PatchAssembly(originalAssembly);
 
             var patchedTypeA = patchedAssembly.MainModule.GetType("Fake.A");
-            patchedTypeA.Interfaces.Select(i => i.FullName).ShouldBe(new[]
-                {"Fake.__FakeHolder`1<A`1<__T>>", "Fake.IA`2<T,__T>", "Fake.__FakeHolder`1<IA`1<__T>>"});
+            patchedTypeA.ShouldNotBeNull();
 
-
+            patchedTypeA.BaseType.ShouldBeSameType(patchedAssembly.MainModule.TypeSystem.Object);
+            patchedTypeA.Fields.ShouldContainOnly(1);
 
             var originalTypeA = originalAssembly.MainModule.GetType("A");
             patchedTypeA.ShouldHaveForwardField(originalTypeA);
@@ -149,8 +150,9 @@ namespace NSubstitute.Weaver.Tests.MscorlibWeaver
 
             patchedTypeA.Interfaces.ShouldHaveMembers(new[]
             {
-                "This should contain a proper interface signature",
-                "This should contain a proper interface signature"
+                "Fake.__FakeHolder`1<A`1<__T>>",
+                "Fake.IA`2<T,__T>",
+                "Fake.__FakeHolder`1<IA`1<__T>>"
             });
         }
 
@@ -186,29 +188,9 @@ namespace NSubstitute.Weaver.Tests.MscorlibWeaver
             patchedTypeA.ShouldNotBeNull();
             patchedTypeA.GenericParameters.ShouldHaveMembers(new[] { "T", "U", "__T", "__U" });
 
-            //BUG: Probably some merge magic went wrong. Need to fix! 
-            var targetType = patchedAssembly.MainModule.Types.Single(t => t.Name == "A");
-            targetType.FullName.ShouldBe("Fake.A");
-            targetType.BaseType.ShouldBeSameType(patchedAssembly.MainModule.TypeSystem.Object);
-            targetType.Fields.Count.ShouldBe(1);
-
-            var originalType = originalAssembly.MainModule.Types.Single(t => t.Name == "A");
-            targetType.ShouldHaveForwardField(originalType);
-            targetType.ShouldHaveForwardConstructor(originalType);
-        }
-
-        [Test]
-        [Category("NG")]
-        public void SimplePublicClassWithGenericsGetsFakeFieldAndCtor()
-        {
-            var code = @"public class A<T, U> {}";
-            var originalAssembly = CreateAssembly(code);
-            var patchedAssembly = PatchAssembly(originalAssembly);
-
-            var patchedTypeA = originalAssembly.MainModule.GetType("A`2");
-
+            var originalType = originalAssembly.MainModule.GetType("A`2");
             var genericParams = patchedTypeA.GenericParameters.Cast<TypeReference>().Skip(2).ToArray();
-            var instanceType = patchedTypeA.MakeGenericInstanceType(genericParams);
+            var instanceType = originalType.MakeGenericInstanceType(genericParams);
             patchedTypeA.ShouldHaveForwardField(instanceType);
             patchedTypeA.ShouldHaveForwardConstructor(instanceType);
         }
@@ -225,11 +207,12 @@ namespace NSubstitute.Weaver.Tests.MscorlibWeaver
             patchedTypeA.ShouldNotBeNull();
 
             patchedTypeA.GenericParameters.ShouldHaveMembers(new[] { "U", "__U" });
-            patchedTypeA.GenericParameters[0].Constraints.ShouldHaveMembers(new[] { "System.Collections.Generic.List`1<U>" });
-            patchedTypeA.GenericParameters[0].Constraints[1].FullName.ShouldBe("Fake.__FakeHolder`1<__U>");
-            
-            patchedTypeA.GenericParameters[1].Constraints.Count.ShouldBe(1);
-            patchedTypeA.GenericParameters[1].Constraints[0].FullName.ShouldBe("System.Collections.Generic.List`1<__U>");
+            patchedTypeA.GenericParameters[0].Constraints.ShouldHaveMembers(
+                new[] 
+                {
+                    "System.Collections.Generic.List`1<U>",
+                    "Fake.__FakeHolder`1<__U>"
+                });
         }
 
         [TestCase("public enum A {}", TestName = "PublicEnum_IsNotProcessed")]
@@ -252,19 +235,14 @@ namespace NSubstitute.Weaver.Tests.MscorlibWeaver
         {
             var originalAssembly = CreateAssembly(code);
             var patchedAssembly = PatchAssembly(originalAssembly);
-            patchedAssembly.MainModule.Types.ShouldContain(t => t.Name == "A`2");
-
+          
             var patchedTypeA = patchedAssembly.MainModule.GetType("Fake.A");
             patchedTypeA.Methods.ShouldNotContain(m => m.Name == "Foo");
-            patchedTypeA.GenericParameters[0].Constraints[1].FullName.ShouldBe("Fake.__FakeHolder`1<__U>");
-
-            patchedTypeA.GenericParameters[1].Constraints.Count.ShouldBe(1);
-            patchedTypeA.GenericParameters[1].Constraints[0].FullName.ShouldBe("System.Collections.Generic.List`1<System.Collections.Generic.List`1<__U>>");
         }
 
         [Test]
         [Category("NG")]
-        public void PatchedTypeOF_PublicClassWithGenericTypeConstraintInTypeConstraint_HasConstraints()
+        public void PatchedTypeOf_PublicClassWithGenericTypeConstraintInTypeConstraint_HasConstraints()
         {
             var code = @"public class A<U> where U : System.Collections.Generic.List<System.Collections.Generic.List<U>> {}";
             var originalAssembly = CreateAssembly(code);
@@ -274,7 +252,12 @@ namespace NSubstitute.Weaver.Tests.MscorlibWeaver
             patchedTypeA.ShouldNotBeNull();
 
             patchedTypeA.GenericParameters.ShouldHaveMembers(new[] { "U", "__U" });
-            patchedTypeA.GenericParameters[0].Constraints.ShouldHaveMembers(new[] { "System.Collections.Generic.List`1<System.Collections.Generic.List`1<U>>" });
+            patchedTypeA.GenericParameters[0].Constraints.ShouldHaveMembers(
+                new[]
+                {
+                    "System.Collections.Generic.List`1<System.Collections.Generic.List`1<U>>",
+                    "Fake.__FakeHolder`1<__U>"
+                });
         }
 
         [Test]
