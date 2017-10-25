@@ -17,6 +17,7 @@ namespace NSubstitute.Weaver
         readonly TypeReference m_ObjectType;
         readonly MethodReference m_GetTypeFromHandleMethod;
         readonly TypeReference m_TypeType;
+        readonly TypeDefinition m_MulticastDelegate;
 
         public MockInjectorVisitor(AssemblyDefinition fakeFramework, ModuleDefinition module)
         {
@@ -29,6 +30,7 @@ namespace NSubstitute.Weaver
 
             m_ObjectType = new TypeReference("System", "Object", module, msCorlibReference);
             m_TypeType = new TypeReference("System", "Type", module, msCorlibReference);
+            m_MulticastDelegate = new TypeReference("System", "MulticastDelegate", module, msCorlibReference).Resolve();
 
             var resolvedSystemType = m_TypeType.Resolve();
             m_GetTypeFromHandleMethod = module.Import(resolvedSystemType.Methods.Single(m => m.Name == "GetTypeFromHandle" && m.HasParameters && m.Parameters.Count == 1 && m.Parameters[0].ParameterType.FullName == "System.RuntimeTypeHandle"));
@@ -44,7 +46,7 @@ namespace NSubstitute.Weaver
                     || ca.AttributeType.Name == "TestFixtureAttribute"))
                 return;
 
-            if (typeDefinition.BaseType != null && typeDefinition.BaseType.FullName == typeDefinition.Module.Import(typeof(MulticastDelegate)).FullName)
+            if (typeDefinition.BaseType != null && typeDefinition.BaseType.Resolve() == m_MulticastDelegate)
                 return;
 
             if (typeDefinition.IsInterface)

@@ -1,13 +1,19 @@
+# Ensure eol normalization
+* text=auto
+
 # These files are text and should be normalized (convert crlf => lf)
 *.cs      text diff=csharp
 *.xaml    text
+*.config  text
 *.csproj  text
 *.sln     text
 *.tt      text
 *.ps1     text
 *.cmd     text
+*.bat     text
 *.msbuild text
 *.md      text
+*.targets text
 
 # Images should be treated as binary
 # (binary is a macro for -text -diff)
