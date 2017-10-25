@@ -569,6 +569,13 @@ namespace NSubstitute.Weaver.MscorlibWeaver.MscorlibWrapper
             if (originalMethod.DeclaringType.Resolve() == type && type.Name != typeDefinition.Name && targetMethod.DeclaringType.HasGenericParameters && !targetMethod.DeclaringType.IsGenericInstance)
                 targetMethod = targetMethod.MakeHostInstanceGeneric(target, false, typeDefinition.GenericParameters.Skip(type.GenericParameters.Count).ToArray());
 
+            var targetMethodReturnType = targetMethod.ReturnType;
+
+            if (targetMethod.ReturnType.IsGenericParameter)
+            {
+                targetMethod.ReturnType = originalMethod.Resolve().ReturnType;
+            }
+
             methodDefinition.AddInstruction(method.IsStatic ? OpCodes.Call : OpCodes.Callvirt, target.MainModule.Import(targetMethod));
 
             var returnType = methodDefinition.ReturnType;
@@ -588,6 +595,31 @@ namespace NSubstitute.Weaver.MscorlibWeaver.MscorlibWrapper
 
                 var ctor = targetType.Methods.Single(m => m.IsConstructor && m.Parameters.SingleOrDefault(p => p.Name == "forward") != null);
                 methodDefinition.AddInstruction(OpCodes.Newobj, ctor);
+            }
+
+            if (returnType.IsGenericParameter)
+            {
+                methodDefinition.Body.InitLocals = true;
+                methodDefinition.Body.Variables.Add(new VariableDefinition(targetMethodReturnType));
+                methodDefinition.AddInstruction(OpCodes.Stloc_0);
+                methodDefinition.Body.Instructions.Add(Instruction.Create(OpCodes.Ldtoken, methodDefinition.ReturnType));
+                var getTypeFromHandle = target.MainModule.Import(typeof(Type).GetMethod("GetTypeFromHandle"));
+                methodDefinition.AddInstruction(OpCodes.Call, getTypeFromHandle);
+                methodDefinition.AddInstruction(OpCodes.Ldc_I4_1);
+                methodDefinition.Body.Instructions.Add(Instruction.Create(OpCodes.Newarr, target.MainModule.TypeSystem.Object));
+                methodDefinition.AddInstruction(OpCodes.Dup);
+                methodDefinition.AddInstruction(OpCodes.Ldc_I4_0);
+                methodDefinition.AddInstruction(OpCodes.Ldc_I4_1);
+                methodDefinition.AddInstruction(OpCodes.Newarr, targetMethodReturnType);
+                methodDefinition.AddInstruction(OpCodes.Dup);
+                methodDefinition.AddInstruction(OpCodes.Ldc_I4_0);
+                methodDefinition.AddInstruction(OpCodes.Ldloc_0);
+                methodDefinition.AddInstruction(OpCodes.Stelem_Any, targetMethodReturnType);
+                methodDefinition.AddInstruction(OpCodes.Stelem_Ref);
+                var createInstance =
+                    typeof(Activator).GetMethod("CreateInstance", new[] {typeof(Type), typeof(object[])});
+                methodDefinition.AddInstruction(OpCodes.Call, target.MainModule.Import(createInstance));
+                methodDefinition.AddInstruction(OpCodes.Unbox_Any, returnType);
             }
 
             methodDefinition.AddInstruction(OpCodes.Ret);
@@ -1194,6 +1226,13 @@ namespace NSubstitute.Weaver.MscorlibWeaver.MscorlibWrapper
         public static MethodDefinition AddInstruction(this MethodDefinition target, OpCode opCode, FieldReference fieldReference)
         {
             target.Body.Instructions.Add(Instruction.Create(opCode, fieldReference));
+            return target;
+        }
+
+        public static MethodDefinition AddInstruction(this MethodDefinition target, OpCode opCode,
+            TypeReference typeReference)
+        {
+            target.Body.Instructions.Add(Instruction.Create(opCode, typeReference));
             return target;
         }
     }

@@ -530,6 +530,27 @@ namespace NSubstitute.Weaver.Tests.MscorlibWeaver
 
         [Test]
         [Category("NG")]
+        public void InterfaceReturningTypeParameter()
+        {
+            CreateAssemblyFromCode("public interface IA<T> { T Foo(T other); } public class A<T> : IA<T> { public T Foo(T other) { return other; } }", out AssemblyDefinition target, out AssemblyDefinition mscorlib);
+
+            var a = target.MainModule.Types.Single(t => t.Name == "A`2");
+            var foo = a.Methods.Single(m => m.Name == "Foo");
+
+            foo.Body.Instructions.Select(i => i.ToString()).ShouldBe(new[]
+            {
+                "IL_0000: ldarg.0",
+                "IL_0001: ldfld A`1<__T> Fake.A`2<T,__T>::__fake_forward",
+                "IL_0006: ldarga.s other",
+                "IL_0008: constrained. T",
+                "IL_000e: callvirt T Fake.__FakeHolder`1<__T>::get_Forward()",
+                "IL_0013: callvirt T A`1<__T>::Foo(T)",
+                "IL_0018: ret"
+            });
+        }
+
+        [Test]
+        [Category("NG")]
         public void MultipleInterfaceImplementationsGenerateSeparateForwardProperties()
         {
             CreateAssemblyFromCode("public interface IA<T> {} public class A : IA<int>, IA<float> {}", out AssemblyDefinition target, out AssemblyDefinition mscorlib);
