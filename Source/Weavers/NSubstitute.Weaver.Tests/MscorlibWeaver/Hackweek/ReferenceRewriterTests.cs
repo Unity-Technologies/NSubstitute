@@ -50,7 +50,10 @@ namespace NSubstitute.Weaver.Tests.MscorlibWeaver.Hackweek
             var type = original.WithType("", "A`1", TypeAttributes.Class).WithGenericParameters("T");
             var typeDefinition = target.WithType("Fake", "A`2", TypeAttributes.Class).WithGenericParameters("T", "__T").Type;
 
-            sut.Rewrite(target, type, typeDefinition, type).ShouldBeSameType(typeDefinition);
+            var actual = sut.Rewrite(target, type, typeDefinition, type);
+            actual.ShouldBeSameType(typeDefinition);
+
+            actual.GenericParameters[0].DeclaringType.ShouldBeSameType(typeDefinition);
         }
 
         [Test]
@@ -83,6 +86,90 @@ namespace NSubstitute.Weaver.Tests.MscorlibWeaver.Hackweek
             var result = typeDefinition.MakeGenericInstanceType(typeDefinition.MakeGenericInstanceType(simpleTypeDefinition, target.Target.MainModule.Import(simpleType)), target.Target.MainModule.Import(type.Type).MakeGenericType(target.Target.MainModule.Import(simpleType)));
 
             sut.Rewrite(target, type, typeDefinition, reference).ShouldBeSameType(result);
+        }
+
+        [Test]
+        public void ReferenceFromGenericTypeToGenericInterface()
+        {
+            var interfaceType = original.WithType("", "IA`1").WithGenericParameters("T").Type;
+            var implType = original.WithType("", "A`1").WithGenericParameters("T").Type;
+
+            var interfaceTypeDefinition = target.WithType("Fake", "IA`2").WithGenericParameters("T", "__T").Type;
+            var implTypeDefinition = target.WithType("Fake", "A`2").WithGenericParameters("T", "__T").Type;
+
+            var implTypeReference = interfaceType.MakeGenericInstanceType(implType.GenericParameters[0]);
+            var expected = interfaceTypeDefinition.MakeGenericInstanceType(implTypeDefinition.GenericParameters.ToArray());
+
+            target.Target.MainModule.AssemblyReferences.Add(new AssemblyNameReference("A", new Version(1, 0)));
+
+            original.Target.Write("A.dll");
+
+            var actual = sut.Rewrite(target, implType, implTypeDefinition, implTypeReference);
+            actual.ShouldBeSameType(expected);
+
+            var actualInstance = (GenericInstanceType) actual;
+            actualInstance.GenericArguments[0].DeclaringType.ShouldBeSameType(implTypeDefinition);
+            actualInstance.GenericArguments[1].DeclaringType.ShouldBeSameType(implTypeDefinition);
+        }
+
+        [Test]
+        public void ReferenceToInstantiateGenericTypeFromNonGenericMethod()
+        {
+            var interfaceType = original.WithType("", "IA`1").WithGenericParameters("T").Type;
+            var simpleType = original.WithType("", "A").Type;
+            var method = original.WithMethod("Foo").WithParameter("arg1", interfaceType.MakeGenericInstanceType(simpleType)).Method;
+
+            var origReference = method.Parameters[0].ParameterType;
+
+            var interfaceTypeDefinition = target.WithType("Fake", "IA`2").WithGenericParameters("T", "__T").Type;
+            var simpleTypeDefinition = target.WithType("Fake", "A").Type;
+            var methodDefinition = original.WithMethod("Foo").WithParameter("arg1",
+                interfaceTypeDefinition.MakeGenericInstanceType(simpleTypeDefinition, simpleType)).Method;
+
+            var targetReference = methodDefinition.Parameters[0].ParameterType;
+
+            sut.Rewrite(target, simpleType, simpleTypeDefinition, origReference, method, methodDefinition).ShouldBeSameType(targetReference);
+        }
+
+        [Test]
+        public void NonFakedGenericParameterMustBeSafe()
+        {
+            var interfaceType = original.WithType("", "IA`1").WithGenericParameters("T").Type;
+            var nonGenericType = original.WithType("", "A").Type;
+            nonGenericType.Interfaces.Add(interfaceType.MakeGenericInstanceType(original.Target.MainModule.TypeSystem.Int32));
+
+            var selfFakeHolder = target.WithType("Fake", "__SelfFakeHolder`1").WithGenericParameters("T").Type;
+            var interfaceTypeDefinition = target.WithType("Fake", "IA`2").WithGenericParameters("T", "__T").Type;
+            var nonGenericTypeDefinition = target.WithType("Fake", "A").Type;
+            nonGenericTypeDefinition.Interfaces.Add(interfaceTypeDefinition.MakeGenericInstanceType(
+                selfFakeHolder.MakeGenericInstanceType(target.Target.MainModule.TypeSystem.Int32),
+                target.Target.MainModule.TypeSystem.Int32));
+
+            var sut = new ReferenceRewriter(r => r.Name == "Int32");
+            var result = sut.Rewrite(target, nonGenericType, nonGenericTypeDefinition, nonGenericType.Interfaces[0],
+                null, null, null, true, selfFakeHolder);
+
+            result.ShouldBeSameType(nonGenericTypeDefinition.Interfaces[0]);
+        }
+
+        [Test]
+        [Ignore("Needs multi generic parameter impplementation before working")]
+        public void ReferenceToGenericTypeFromGenericMethod()
+        {
+            var interfaceType = original.WithType("", "IA`1").WithGenericParameters("T").Type;
+            var simpleType = original.WithType("", "A").Type;
+            var method = original.WithMethod("Foo").WithMethodGenericParameters("T").WithParameter("arg1", interfaceType.MakeGenericInstanceType(original.Method.GenericParameters[0])).Method;
+
+            var origReference = method.Parameters[0].ParameterType;
+
+            var interfaceTypeDefinition = target.WithType("Fake", "IA`2").WithGenericParameters("T", "__T").Type;
+            var simpleTypeDefinition = target.WithType("Fake", "A").Type;
+            var methodDefinition = original.WithMethod("Foo").WithMethodGenericParameters("T", "__T").WithParameter("arg1",
+                interfaceTypeDefinition.MakeGenericInstanceType(original.Method.GenericParameters.ToArray())).Method;
+
+            var targetReference = methodDefinition.Parameters[0].ParameterType;
+
+            sut.Rewrite(target, simpleType, simpleTypeDefinition, origReference, method, methodDefinition, new Dictionary<MethodDefinition, MethodDefinition>{{method, methodDefinition}}).ShouldBeSameType(targetReference);
         }
 
         [Test]
