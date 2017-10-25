@@ -132,6 +132,27 @@ namespace NSubstitute.Weaver.Tests.MscorlibWeaver.Hackweek
         }
 
         [Test]
+        public void NonFakedGenericParameterMustBeSafe()
+        {
+            var interfaceType = original.WithType("", "IA`1").WithGenericParameters("T").Type;
+            var nonGenericType = original.WithType("", "A").Type;
+            nonGenericType.Interfaces.Add(interfaceType.MakeGenericInstanceType(original.Target.MainModule.TypeSystem.Int32));
+
+            var selfFakeHolder = target.WithType("Fake", "__SelfFakeHolder`1").WithGenericParameters("T").Type;
+            var interfaceTypeDefinition = target.WithType("Fake", "IA`2").WithGenericParameters("T", "__T").Type;
+            var nonGenericTypeDefinition = target.WithType("Fake", "A").Type;
+            nonGenericTypeDefinition.Interfaces.Add(interfaceTypeDefinition.MakeGenericInstanceType(
+                selfFakeHolder.MakeGenericInstanceType(target.Target.MainModule.TypeSystem.Int32),
+                target.Target.MainModule.TypeSystem.Int32));
+
+            var sut = new ReferenceRewriter(r => r.Name == "Int32");
+            var result = sut.Rewrite(target, nonGenericType, nonGenericTypeDefinition, nonGenericType.Interfaces[0],
+                null, null, null, true, selfFakeHolder);
+
+            result.ShouldBeSameType(nonGenericTypeDefinition.Interfaces[0]);
+        }
+
+        [Test]
         [Ignore("Needs multi generic parameter impplementation before working")]
         public void ReferenceToGenericTypeFromGenericMethod()
         {

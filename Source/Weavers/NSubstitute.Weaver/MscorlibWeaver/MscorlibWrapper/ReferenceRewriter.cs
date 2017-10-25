@@ -20,39 +20,39 @@ namespace NSubstitute.Weaver.MscorlibWeaver.MscorlibWrapper
         }
 
         // assumes generic parameter has same names in original and target
-        public TypeReference Rewrite(AssemblyDefinition target, TypeDefinition type, TypeDefinition typeDefinition, TypeReference reference, MethodDefinition method = null, MethodDefinition methodDefinition = null, Dictionary<MethodDefinition, MethodDefinition> methodMap = null, bool lookupFake = true)
+        public TypeReference Rewrite(AssemblyDefinition target, TypeDefinition type, TypeDefinition typeDefinition, TypeReference reference, MethodDefinition method = null, MethodDefinition methodDefinition = null, Dictionary<MethodDefinition, MethodDefinition> methodMap = null, bool lookupFake = true, TypeReference selfFakeHolder = null)
         {
-            return Rewrite(target, reference, methodMap, lookupFake);
+            return Rewrite(target, reference, methodMap, lookupFake, selfFakeHolder: selfFakeHolder);
         }
 
-        public TypeReference Rewrite(AssemblyDefinition targetAssembly, TypeReference reference, Dictionary<MethodDefinition, MethodDefinition> methodMap, bool lookupFake = true, bool useFakeForGenericParameters = false)
+        public TypeReference Rewrite(AssemblyDefinition targetAssembly, TypeReference reference, Dictionary<MethodDefinition, MethodDefinition> methodMap, bool lookupFake = true, bool useFakeForGenericParameters = false, TypeReference selfFakeHolder = null)
         {
             if (reference == null)
                 return null;
 
             if (reference.IsGenericParameter)
-                return RewriteGenericParameter(targetAssembly, reference, methodMap, lookupFake, useFakeForGenericParameters);
+                return RewriteGenericParameter(targetAssembly, reference, methodMap, lookupFake, useFakeForGenericParameters, selfFakeHolder);
 
             if (reference.IsArray)
-                return Rewrite(targetAssembly, reference.GetElementType(), methodMap, lookupFake).MakeArrayType(((ArrayType)reference).Rank);
+                return Rewrite(targetAssembly, reference.GetElementType(), methodMap, lookupFake, selfFakeHolder: selfFakeHolder).MakeArrayType(((ArrayType)reference).Rank);
 
             if (reference.IsByReference)
-                return Rewrite(targetAssembly, reference.GetElementType(), methodMap, lookupFake).MakeByReferenceType();
+                return Rewrite(targetAssembly, reference.GetElementType(), methodMap, lookupFake, selfFakeHolder: selfFakeHolder).MakeByReferenceType();
 
             if (reference.IsPointer)
-                return Rewrite(targetAssembly, reference.GetElementType(), methodMap, lookupFake).MakePointerType();
+                return Rewrite(targetAssembly, reference.GetElementType(), methodMap, lookupFake, selfFakeHolder: selfFakeHolder).MakePointerType();
 
             if (reference.IsPinned)
-                return Rewrite(targetAssembly, reference.GetElementType(), methodMap, lookupFake).MakePinnedType();
+                return Rewrite(targetAssembly, reference.GetElementType(), methodMap, lookupFake, selfFakeHolder: selfFakeHolder).MakePinnedType();
 
             if (reference.IsOptionalModifier)
-                return Rewrite(targetAssembly, reference.GetElementType(), methodMap, lookupFake).MakeOptionalModifierType(((OptionalModifierType)reference).ModifierType);
+                return Rewrite(targetAssembly, reference.GetElementType(), methodMap, lookupFake, selfFakeHolder: selfFakeHolder).MakeOptionalModifierType(((OptionalModifierType)reference).ModifierType);
 
             if (reference.IsSentinel)
-                return Rewrite(targetAssembly, reference.GetElementType(), methodMap, lookupFake).MakeSentinelType();
+                return Rewrite(targetAssembly, reference.GetElementType(), methodMap, lookupFake, selfFakeHolder: selfFakeHolder).MakeSentinelType();
 
             if (reference.IsRequiredModifier)
-                return Rewrite(targetAssembly, reference.GetElementType(), methodMap, lookupFake).MakeRequiredModifierType(((RequiredModifierType)reference).ModifierType);
+                return Rewrite(targetAssembly, reference.GetElementType(), methodMap, lookupFake, selfFakeHolder: selfFakeHolder).MakeRequiredModifierType(((RequiredModifierType)reference).ModifierType);
 
             if (!m_ShouldSkip(reference))
             {
@@ -60,7 +60,7 @@ namespace NSubstitute.Weaver.MscorlibWeaver.MscorlibWrapper
                 if (reference.IsNested)
                 {
                     typeRef = new TypeReference("", reference.Name, targetAssembly.MainModule, targetAssembly.MainModule);
-                    var rewrittenDeclaringType = Rewrite(targetAssembly, reference.DeclaringType, methodMap, lookupFake);
+                    var rewrittenDeclaringType = Rewrite(targetAssembly, reference.DeclaringType, methodMap, lookupFake, selfFakeHolder: selfFakeHolder);
                     typeRef.DeclaringType = rewrittenDeclaringType;
                 }
                 else
@@ -85,14 +85,16 @@ namespace NSubstitute.Weaver.MscorlibWeaver.MscorlibWrapper
                     {
                         foreach (var genericArgument in origInstanceType.GenericArguments)
                         {
-                            var rewrittenArgument = Rewrite(targetAssembly, genericArgument, methodMap, lookupFake);
+                            var rewrittenArgument = Rewrite(targetAssembly, genericArgument, methodMap, lookupFake, selfFakeHolder: selfFakeHolder);
+                            if (!rewrittenArgument.IsGenericParameter && !IsFaked(rewrittenArgument) && selfFakeHolder != null)
+                                rewrittenArgument = selfFakeHolder.MakeGenericInstanceType(rewrittenArgument);
                             targetInstanceType.GenericArguments.Add(rewrittenArgument);
                         }
                         if (targetInstanceType.Namespace == k_FakeNamespace || (targetInstanceType.Namespace?.StartsWith($"{k_FakeNamespace}.") ?? false))
                         {
                             foreach (var genericArgument in origInstanceType.GenericArguments)
                             {
-                                var rewrittenArgument = Rewrite(targetAssembly, genericArgument, methodMap, lookupFake: false, useFakeForGenericParameters: true);
+                                var rewrittenArgument = Rewrite(targetAssembly, genericArgument, methodMap, lookupFake: false, useFakeForGenericParameters: true, selfFakeHolder: selfFakeHolder);
                                 targetInstanceType.GenericArguments.Add(rewrittenArgument);
                             }
                         }
@@ -113,12 +115,20 @@ namespace NSubstitute.Weaver.MscorlibWeaver.MscorlibWrapper
 
             var importedTypeReference = targetAssembly.MainModule.Import(reference.Resolve());
             if (reference.IsGenericInstance)
-                return importedTypeReference.MakeGenericInstanceType(((GenericInstanceType)reference).GenericArguments.Select(a => Rewrite(targetAssembly, a, methodMap, lookupFake)).ToArray());
+                return importedTypeReference.MakeGenericInstanceType(((GenericInstanceType)reference).GenericArguments.Select(a => Rewrite(targetAssembly, a, methodMap, lookupFake, selfFakeHolder: selfFakeHolder)).ToArray());
 
             return importedTypeReference;
         }
 
-        private TypeReference RewriteGenericParameter(AssemblyDefinition targetAssembly, TypeReference reference, Dictionary<MethodDefinition, MethodDefinition> methodMap, bool lookupFake, bool useFakeForGenericParameters)
+        private bool IsFaked(TypeReference reference)
+        {
+            return reference.IsNested
+                ? IsFaked(reference.DeclaringType)
+                : reference.Namespace == k_FakeNamespace ||
+                  reference.Namespace.StartsWith($"{k_FakeNamespace}.");
+        }
+
+        private TypeReference RewriteGenericParameter(AssemblyDefinition targetAssembly, TypeReference reference, Dictionary<MethodDefinition, MethodDefinition> methodMap, bool lookupFake, bool useFakeForGenericParameters, TypeReference selfFakeHolder)
         {
             TypeReference rewrittenDeclaringType;
             var genericParameter = ((GenericParameter) reference);
@@ -198,6 +208,56 @@ namespace NSubstitute.Weaver.MscorlibWeaver.MscorlibWrapper
             }
 
             return target.MainModule.Import(reference);
+        }
+
+        public TypeReference ReplaceGenericParameter(TypeReference reference, GenericParameter[] original,
+            GenericParameter[] target)
+        {
+            if (reference == null)
+                return null;
+
+            if (reference.IsGenericParameter)
+            {
+                for (var i = 0; i < original.Length; ++i)
+                    if (reference == original[i])
+                        return target[i];
+                return reference;
+            }
+
+            if (reference.IsArray)
+                return ReplaceGenericParameter(reference.GetElementType(), original, target).MakeArrayType(((ArrayType)reference).Rank);
+
+            if (reference.IsByReference)
+                return ReplaceGenericParameter(reference.GetElementType(), original, target).MakeByReferenceType();
+
+            if (reference.IsPointer)
+                return ReplaceGenericParameter(reference.GetElementType(), original, target).MakePointerType();
+
+            if (reference.IsPinned)
+                return ReplaceGenericParameter(reference.GetElementType(), original, target).MakePinnedType();
+
+            if (reference.IsOptionalModifier)
+                return ReplaceGenericParameter(reference.GetElementType(), original, target).MakeOptionalModifierType(((OptionalModifierType)reference).ModifierType);
+
+            if (reference.IsSentinel)
+                return ReplaceGenericParameter(reference.GetElementType(), original, target).MakeSentinelType();
+
+            if (reference.IsRequiredModifier)
+                return ReplaceGenericParameter(reference.GetElementType(), original, target).MakeRequiredModifierType(((RequiredModifierType)reference).ModifierType);
+
+            if (reference is GenericInstanceType genericInstance)
+            {
+                return genericInstance.Resolve().MakeGenericInstanceType(genericInstance.GenericArguments
+                    .Select(ga => ReplaceGenericParameter(ga, original, target)).ToArray());
+            }
+
+            if (reference.HasGenericParameters)
+            {
+                throw new NotImplementedException();
+            }
+
+            return reference;
+
         }
 
         public TypeReference AddTickToName(AssemblyDefinition target, TypeReference reference)

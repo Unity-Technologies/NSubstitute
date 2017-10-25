@@ -60,7 +60,7 @@ namespace NSubstitute.Weaver.Tests.MscorlibWeaver
                 "IL_0000: ldarg.0",
                 "IL_0001: ldfld A Fake.A::__fake_forward",
                 "IL_0006: ldarg b",
-                "IL_000a: callvirt A/B Fake.__FakeHolder<A/B>::get_Forward()",
+                "IL_000a: callvirt T Fake.__FakeHolder`1<A/B>::get_Forward()",
                 "IL_000f: callvirt A/B A::Foo(A/B)",
                 "IL_0014: newobj System.Void Fake.A/B::.ctor(A/B)",
                 "IL_0019: ret"
@@ -104,6 +104,8 @@ namespace NSubstitute.Weaver.Tests.MscorlibWeaver
             var a = target.MainModule.Types.Single(t => t.FullName == "Fake.A`2");
             a.Interfaces.Select(i => i.FullName).ShouldBe(new[]
                 {"Fake.__FakeHolder`1<A`1<__T>>", "Fake.IA`2<T,__T>", "Fake.__FakeHolder`1<IA`1<__T>>"});
+
+
         }
 
         [Test]
@@ -172,8 +174,12 @@ namespace NSubstitute.Weaver.Tests.MscorlibWeaver
 
             var targetType = target.MainModule.Types.Single(t => t.Name == "A`2");
             targetType.FullName.ShouldBe("Fake.A`2");
-            targetType.GenericParameters[0].Constraints.ShouldNotBeEmpty();
+            targetType.GenericParameters[0].Constraints.Count.ShouldBe(2);
             targetType.GenericParameters[0].Constraints[0].FullName.ShouldBe("System.Collections.Generic.List`1<U>");
+            targetType.GenericParameters[0].Constraints[1].FullName.ShouldBe("Fake.__FakeHolder`1<__U>");
+
+            targetType.GenericParameters[1].Constraints.Count.ShouldBe(1);
+            targetType.GenericParameters[1].Constraints[0].FullName.ShouldBe("System.Collections.Generic.List`1<__U>");
         }
 
         [Test]
@@ -195,8 +201,12 @@ namespace NSubstitute.Weaver.Tests.MscorlibWeaver
 
             var targetType = target.MainModule.Types.Single(t => t.Name == "A`2");
             targetType.FullName.ShouldBe("Fake.A`2");
-            targetType.GenericParameters[0].Constraints.ShouldNotBeEmpty();
+            targetType.GenericParameters[0].Constraints.Count.ShouldBe(2);
             targetType.GenericParameters[0].Constraints[0].FullName.ShouldBe("System.Collections.Generic.List`1<System.Collections.Generic.List`1<U>>");
+            targetType.GenericParameters[0].Constraints[1].FullName.ShouldBe("Fake.__FakeHolder`1<__U>");
+
+            targetType.GenericParameters[1].Constraints.Count.ShouldBe(1);
+            targetType.GenericParameters[1].Constraints[0].FullName.ShouldBe("System.Collections.Generic.List`1<System.Collections.Generic.List`1<__U>>");
         }
 
         [Test]
@@ -279,7 +289,10 @@ namespace NSubstitute.Weaver.Tests.MscorlibWeaver
             targetType.FullName.ShouldBe("Fake.IB");
 
             targetType.Interfaces.Count.ShouldBe(2);
-            targetType.Interfaces[1].ShouldBeSameType(parentType.MakeGenericInstanceType(mscorlib.MainModule.TypeSystem.Int32, mscorlib.MainModule.TypeSystem.Int32));
+            var selfFakeHolder = target.MainModule.Types.Single(t => t.Name == "SelfFakeHolder`1");
+            targetType.Interfaces[1].ShouldBeSameType(parentType.MakeGenericInstanceType(
+                selfFakeHolder.MakeGenericInstanceType(mscorlib.MainModule.TypeSystem.Int32),
+                mscorlib.MainModule.TypeSystem.Int32));
         }
 
         [Test]
@@ -366,7 +379,7 @@ namespace NSubstitute.Weaver.Tests.MscorlibWeaver
             callvirt.Operand.ShouldBeOfType<MethodReference>();
 
             var method = (MethodReference)callvirt.Operand;
-            method.FullName.ShouldBe("B Fake.__FakeHolder<B>::get_Forward()");
+            method.FullName.ShouldBe("T Fake.__FakeHolder`1<B>::get_Forward()");
         }
 
         [Test]
@@ -397,7 +410,7 @@ namespace NSubstitute.Weaver.Tests.MscorlibWeaver
                 "IL_0006: ret"
             });
 
-            forward.Overrides.Single().FullName.ShouldBe("A Fake.__FakeHolder`1<A>::get_Forward()");
+            forward.Overrides.Single().FullName.ShouldBe("T Fake.__FakeHolder`1<A>::get_Forward()");
 
             var forwardProperty = type.Properties.Single(m => m.Name == "Fake.__FakeHolder<global::A>.Forward");
             forwardProperty.FullName.ShouldBe("A Fake.A::Fake.__FakeHolder<global::A>.Forward()");
@@ -414,10 +427,16 @@ namespace NSubstitute.Weaver.Tests.MscorlibWeaver
             var equals = fakeImpl.Methods.Single(m => m.Name == "Equals");
             equals.Parameters[0].ParameterType.ShouldBeSameType(fakeImpl.GenericParameters[0]);
 
-            var callUnderlyingMethod = equals.Body.Instructions.Single(i => i.OpCode == OpCodes.Callvirt);
-            callUnderlyingMethod.Operand.ShouldBeOfType<MethodReference>();
-            var reference = (MethodReference)callUnderlyingMethod.Operand;
-            reference.DeclaringType.ShouldBeOfType<GenericInstanceType>();
+            equals.Body.Instructions.Select(i => i.ToString()).ShouldBe(new[]
+            {
+                "IL_0000: ldarg.0",
+                "IL_0001: ldfld IEquatable`1<__T> Fake._FakeImpl_IEquatable`2<T,__T>::__fake_forward",
+                "IL_0006: ldarga.s other",
+                "IL_0008: constrained. T",
+                "IL_000e: callvirt T Fake.__FakeHolder`1<__T>::get_Forward()",
+                "IL_0013: callvirt System.Boolean IEquatable`1<__T>::Equals(T)",
+                "IL_0018: ret"
+            });
 
             var timeZoneInfo = target.MainModule.Types.Single(t => t.FullName == "Fake.TimeZoneInfo");
             var tzEquals = timeZoneInfo.Methods.Single(m => m.Name == "Equals");
@@ -426,7 +445,7 @@ namespace NSubstitute.Weaver.Tests.MscorlibWeaver
                 "IL_0000: ldarg.0",
                 "IL_0001: ldfld TimeZoneInfo Fake.TimeZoneInfo::__fake_forward",
                 "IL_0006: ldarg other",
-                "IL_000a: callvirt TimeZoneInfo Fake.__FakeHolder<TimeZoneInfo>::get_Forward()",
+                "IL_000a: callvirt T Fake.__FakeHolder`1<TimeZoneInfo>::get_Forward()",
                 "IL_000f: callvirt System.Boolean TimeZoneInfo::Equals(TimeZoneInfo)",
                 "IL_0014: ret"
             });
@@ -502,6 +521,15 @@ namespace NSubstitute.Weaver.Tests.MscorlibWeaver
             CreateAssemblyFromCode("public interface IA<T> {} public class A : IA<int>, IA<float> {}", out AssemblyDefinition target, out AssemblyDefinition mscorlib);
 
             var a = target.MainModule.Types.Single(t => t.FullName == "Fake.A");
+            a.Interfaces.Select(i => i.FullName).ShouldBe(new[]
+                {
+                    "Fake.__FakeHolder`1<A>",
+                    "Fake.IA`2<Fake.SelfFakeHolder`1<System.Int32>,System.Int32>",
+                    "Fake.IA`2<Fake.SelfFakeHolder`1<System.Single>,System.Single>",
+                    "Fake.__FakeHolder`1<IA`1<System.Int32>>",
+                    "Fake.__FakeHolder`1<IA`1<System.Single>>"
+                }
+            );
             a.Properties.Select(p => p.Name).ShouldBe(new []{"Fake.__FakeHolder<global::A>.Forward", "Fake.__FakeHolder<global::IA`1<System.Int32>>.Forward", "Fake.__FakeHolder<global::IA`1<System.Single>>.Forward"});
 
             var fakeImplType = target.MainModule.Types.Single(t => t.FullName == "Fake._FakeImpl_IA`2");
@@ -615,7 +643,7 @@ namespace NSubstitute.Weaver.Tests.MscorlibWeaver
                 "IL_0000: ldarg.0",
                 "IL_0001: ldfld IA Fake._FakeImpl_IA::__fake_forward",
                 "IL_0006: ldarg y",
-                "IL_000a: callvirt IA Fake.__FakeHolder<IA>::get_Forward()",
+                "IL_000a: callvirt T Fake.__FakeHolder`1<IA>::get_Forward()",
                 "IL_000f: ldarg z",
                 "IL_0013: callvirt IA IA::Bar(IA,System.Int32)",
                 "IL_0018: newobj System.Void Fake._FakeImpl_IA::.ctor(IA)",
