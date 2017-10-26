@@ -1,9 +1,8 @@
-#define PEVERIFY
+﻿#define PEVERIFY
 
 using System;
 using System.IO;
 using System.Linq;
-using System.Linq.Expressions;
 using System.Runtime.CompilerServices;
 using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CSharp;
@@ -12,7 +11,6 @@ using Mono.Cecil.Cil;
 using Mono.Cecil.Rocks;
 using NSubstitute.Weaver.MscorlibWeaver.MscorlibWrapper;
 using NUnit.Framework;
-using NUnit.Framework.Constraints;
 using Shouldly;
 
 namespace NSubstitute.Weaver.Tests.MscorlibWeaver
@@ -312,38 +310,46 @@ namespace NSubstitute.Weaver.Tests.MscorlibWeaver
         [Category("NG")]
         public void SimpleInterfaceImplementingGenericInterfaceBothTranslatedAndImplementsPreserved()
         {
-            CreateAssemblyFromCode(@"public interface IA<T> {} public interface IB : IA<int> {}", out AssemblyDefinition target, out AssemblyDefinition mscorlib);
+            var code = @"public interface IA<T> {} public interface IB : IA<int> {}";
+            var originalAssembly = CreateAssembly(code);
+            var patchedAssembly = PatchAssembly(originalAssembly);
 
-            target.MainModule.Types.ShouldContain(t => t.Name == "IA`2");
-            target.MainModule.Types.ShouldContain(t => t.Name == "IB");
+            var patchedTypeIA = patchedAssembly.MainModule.GetType("Fake.IA`2");
+            patchedTypeIA.ShouldNotBeNull();
+            var patchedTypeIB = patchedAssembly.MainModule.GetType("Fake.IB");
+            patchedTypeIB.ShouldNotBeNull();
 
-            var parentType = target.MainModule.Types.Single(t => t.Name == "IA`2");
-            parentType.FullName.ShouldBe("Fake.IA`2");
+            patchedTypeIB.Interfaces.ShouldHaveMembers(new []
+            {
+                "Fake.__FakeHolder`1<IB>",
+                "Fake.IA`2<Fake.SelfFakeHolder`1<System.Int32>,System.Int32>"
+            });
 
-            var targetType = target.MainModule.Types.Single(t => t.Name == "IB");
-            targetType.FullName.ShouldBe("Fake.IB");
-
-            targetType.Interfaces.Count.ShouldBe(2);
-            var selfFakeHolder = target.MainModule.Types.Single(t => t.Name == "SelfFakeHolder`1");
-            targetType.Interfaces[1].ShouldBeSameType(parentType.MakeGenericInstanceType(
-                selfFakeHolder.MakeGenericInstanceType(mscorlib.MainModule.TypeSystem.Int32),
-                mscorlib.MainModule.TypeSystem.Int32));
+            var selfFakeHolder = patchedAssembly.MainModule.GetType("Fake.SelfFakeHolder`1");
+            var originalInt32 = originalAssembly.MainModule.TypeSystem.Int32;
+            patchedTypeIB.Interfaces[1].ShouldBeSameType(patchedTypeIA.MakeGenericInstanceType(
+                selfFakeHolder.MakeGenericInstanceType(originalInt32), originalInt32));
         }
 
         [Test]
         public void SimpleInterfaceWithMethodIsTranslated()
         {
-            CreateAssemblyFromCode(@"public interface IA { int Foo(IA x); }", out AssemblyDefinition target, out AssemblyDefinition mscorlib);
+            var code = @"public interface IA { int Foo(IA x); }";
+            var originalAssembly = CreateAssembly(code);
+            var patchedAssembly = PatchAssembly(originalAssembly);
 
-            target.MainModule.Types.ShouldContain(t => t.FullName == "Fake.IA");
+            var patchedTypeIA = patchedAssembly.MainModule.GetType("Fake.IA");
+            patchedTypeIA.ShouldNotBeNull();
+            patchedTypeIA.Methods.ShouldHaveMembers(new[]
+            {
+                "System.Int32 Fake.IA::Foo(Fake.IA)",
+                "get__FakeForwardProp_IA"
+            });
 
-            var targetType = target.MainModule.Types.Single(t => t.FullName == "Fake.IA");
-            targetType.Methods.Select(m => m.Name).ShouldBe(new[] { "Foo", "get__FakeForwardProp_IA" });
-
-            var method = targetType.Methods.Single(m => m.Name == "Foo");
-            method.Parameters.Count.ShouldBe(1);
-            method.Parameters[0].Name.ShouldBe("x");
-            method.Parameters[0].ParameterType.ShouldBeSameType(targetType);
+            var fooMethod = patchedTypeIA.Methods.Single(m => m.Name == "Foo");
+            fooMethod.Parameters.ShouldHaveSingleItem();
+            fooMethod.Parameters[0].Name.ShouldBe("x");
+            fooMethod.Parameters[0].ParameterType.ShouldBeSameType(patchedTypeIA);
         }
 
         [TestCase(
