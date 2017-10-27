@@ -955,12 +955,5 @@ namespace NSubstitute.Weaver.Tests.MscorlibWeaver
 
             return patched;
         }
-//
-//        static void CreateAssemblyFromCode(string program, out AssemblyDefinition patched, out AssemblyDefinition original, [CallerMemberName] string originalAssemblyName = null)
-//        {
-//            original = CreateAssembly(program, originalAssemblyName);
-//
-//            patched = PatchAssembly(original);
-//        }
     }
 }
