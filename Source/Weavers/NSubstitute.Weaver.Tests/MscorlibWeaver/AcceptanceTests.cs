@@ -159,19 +159,29 @@ namespace NSubstitute.Weaver.Tests.MscorlibWeaver
         [Ignore("Fails depressingly")]
         public void PrivateInterfaceImplementationNotWithGenericsTest()
         {
-            CreateAssemblyFromCode(@"public interface IA<T> { T Foo<U>(U u); } public interface IB<T> { int Foo<V>(); } public class A<T> : IA<float>, IA<IA<int>>, IB<T> { public int Foo<V>() { return 0; } float IA<float>.Foo<U>(U u) { return 0; } IA<int> IA<IA<int>>.Foo<U>(U u) { return null; } }", out AssemblyDefinition target, out AssemblyDefinition mscorlib);
+            var code = @"public interface IA<T> { T Foo<U>(U u); }
+                         public interface IB<T> { int Foo<V>(); }
+                         public class A<T> : IA<float>, IA<IA<int>>, IB<T>
+                         {
+                             public int Foo<V>() { return 0; }
+                             float IA<float>.Foo<U>(U u) { return 0; }
+                             IA<int> IA<IA<int>>.Foo<U>(U u) { return null; }
+                         }";
+            var originalAssembly = CreateAssembly(code);
+            var patchedAssembly = PatchAssembly(originalAssembly);
 
-            var a = target.MainModule.Types.Single(t => t.FullName == "Fake.A`1");
-            var methods = a.Methods.Where(m => m.Name.Contains("Foo")).ToList();
+            var patchedTypeA = patchedAssembly.MainModule.GetType("Fake.A`1");
+            patchedTypeA.ShouldNotBeNull();
 
-            var expectedMethod = "System.Single Fake.A`1::Fake.IA<System.Single>.Foo(U)";
-            Assert.That(methods.Select(m => m.FullName), Contains.Item(expectedMethod));
-            var expectedMethod2 = "Fake.IA`1<System.Int32> Fake.A`1::Fake.IA<Fake.IA<System.Int32>>.Foo(U)";
-            Assert.That(methods.Select(m => m.FullName), Contains.Item(expectedMethod2));
+            var patchedFooMethods = patchedTypeA.Methods.Where(m => m.Name.Contains("Foo")).ToList();
+            patchedFooMethods.ShouldHaveMembers(new []
+            {
+                "System.Single Fake.A`1::Fake.IA<System.Single>.Foo(U)",
+                "Fake.IA`1<System.Int32> Fake.A`1::Fake.IA<Fake.IA<System.Int32>>.Foo(U)"
+            });
 
-            var method = methods.Single(m => m.FullName == expectedMethod);
-            Assert.That(method.Overrides, Has.Count.EqualTo(1));
-            Assert.That(method.Overrides[0].FullName, Is.EqualTo("System.Void Fake.IA::Foo()"));
+            var fooMethod = patchedFooMethods.Single(m => m.FullName == "System.Single Fake.A`1::Fake.IA<System.Single>.Foo(U)");
+            fooMethod.Overrides.ShouldHaveMembers(new[] { "System.Void Fake.IA::Foo()" });
         }
 
         [Test]
@@ -390,33 +400,47 @@ namespace NSubstitute.Weaver.Tests.MscorlibWeaver
             "IL_000f: newobj System.Void Fake.A::.ctor(A)",
             "IL_0014: ret")]
         [Category("NG")]
-        public void WrapMethod(string program, string typeName, string methodName, int parameterCount, string suffix, params string[] result)
+        public void WrapMethod(string code, string typeName, string methodName, int parameterCount, string suffix, params string[] result)
         {
-            CreateAssemblyFromCode(program, out AssemblyDefinition target, out AssemblyDefinition mscorlib, GetMethodName() + suffix);
+            var originalAssembly = CreateAssembly(code);
+            var patchedAssembly = PatchAssembly(originalAssembly);
 
-            target.MainModule.Types.ShouldContain(t => t.FullName == "Fake." + typeName);
+            var patchedType = patchedAssembly.MainModule.GetType("Fake." + typeName);
+            patchedType.ShouldNotBeNull();
 
-            var targetType = target.MainModule.Types.Single(t => t.FullName == "Fake." + typeName);
-            targetType.Methods.ShouldContain(m => m.Name == methodName);
+            patchedType.Methods.ShouldContain(m => m.Name == methodName);
 
-            var fooMethod = targetType.Methods.Single(m => m.Name == methodName);
-            fooMethod.Parameters.Count.ShouldBe(parameterCount);
+            var fooMethod = patchedType.Methods.Single(m => m.Name == methodName);
+            fooMethod.Parameters.ShouldContainOnly(parameterCount);
             fooMethod.Body.Instructions.InstructionsToString().ShouldBe(result);
         }
 
         [Test]
         [Category("NG")]
-        public void AbstractClassGeneratesWrapperClass()
+        public void PatchedTypeOf_AbstractClass_GeneratesWrapperClass()
         {
-            CreateAssemblyFromCode("public abstract class B { public abstract B Baz(); public B Bar(B b) { return b; } } public abstract class A : B { public virtual A Foo(A a, int b) { return a; } }", out AssemblyDefinition patched, out AssemblyDefinition original);
+            var code =
+                @"
+                public abstract class B 
+                {
+                    public abstract B Baz(); 
+                    public B Bar(B b) { return b; } 
+                }
+                public abstract class A : B 
+                {
+                    public virtual A Foo(A a, int b) { return a; } 
+                }";
+            var originalAssembly = CreateAssembly(code);
+            var patchedAssembly = PatchAssembly(originalAssembly);
 
-            var b = patched.MainModule.Types.Single(t => t.FullName == "Fake.B");
+            var patchedTypeB = patchedAssembly.MainModule.GetType("Fake.B");
+            patchedTypeB.ShouldNotBeNull();
 
-            var bar = b.Methods.Single(m => m.Name == "Bar");
-            bar.ReturnType.ShouldBeSameType(b);
-            bar.IsAbstract.ShouldBeFalse();
+            var barMethod = patchedTypeB.Methods.Single(m => m.Name == "Bar");
+            barMethod.ReturnType.ShouldBeSameType(patchedTypeB);
+            barMethod.IsAbstract.ShouldBeFalse();
 
-            var callvirt = bar.Body.Instructions.First(i => i.OpCode == OpCodes.Callvirt);
+            var callvirt = barMethod.Body.Instructions.First(i => i.OpCode == OpCodes.Callvirt);
             callvirt.Operand.ShouldBeOfType<MethodReference>();
 
             var method = (MethodReference)callvirt.Operand;
@@ -425,14 +449,16 @@ namespace NSubstitute.Weaver.Tests.MscorlibWeaver
 
         [Test]
         [Category("NG")]
-        public void TestForwardConstructorIsValid()
+        public void PacthedTypeOf_PublicClass_ForwardConstructorIsValid()
         {
-            CreateAssemblyFromCode("public class A {}", out AssemblyDefinition target, out AssemblyDefinition mscorlib);
+            var code = @"public class A {}";
+            var originalAssembly = CreateAssembly(code);
+            var patchedAssembly = PatchAssembly(originalAssembly);
 
-            var type = target.MainModule.Types.Single(t => t.FullName == "Fake.A");
-            var ctor = type.Methods.Single(m => m.Name == ".ctor");
+            var patchedTypeA = patchedAssembly.MainModule.GetType("Fake.A");
+            var ctorOfPatchedTypeA = patchedTypeA.Methods.Single(m => m.Name == ".ctor");
 
-            ctor.Body.Instructions.Select(i => i.ToString()).ShouldBe(new []
+            ctorOfPatchedTypeA.Body.Instructions.Select(i => i.ToString()).ShouldBe(new []
             {
                 "IL_0000: ldarg.0",
                 "IL_0001: call System.Void System.Object::.ctor()",
@@ -442,8 +468,7 @@ namespace NSubstitute.Weaver.Tests.MscorlibWeaver
                 "IL_000d: ret"
             });
 
-            var forward = type.Methods.Single(m => m.Name == "Fake.__FakeHolder<global::A>.get_Forward");
-
+            var forward = patchedTypeA.Methods.Single(m => m.Name == "Fake.__FakeHolder<global::A>.get_Forward");
             forward.Body.Instructions.Select(i => i.ToString()).ShouldBe(new []
             {
                 "IL_0000: ldarg.0",
@@ -451,24 +476,34 @@ namespace NSubstitute.Weaver.Tests.MscorlibWeaver
                 "IL_0006: ret"
             });
 
-            forward.Overrides.Single().FullName.ShouldBe("T Fake.__FakeHolder`1<A>::get_Forward()");
+            forward.Overrides.ShouldHaveMembers(new [] { "T Fake.__FakeHolder`1<A>::get_Forward()" });
 
-            var forwardProperty = type.Properties.Single(m => m.Name == "Fake.__FakeHolder<global::A>.Forward");
-            forwardProperty.FullName.ShouldBe("A Fake.A::Fake.__FakeHolder<global::A>.Forward()");
-            forwardProperty.GetMethod.ShouldBe(forward);
+            patchedTypeA.Properties.ShouldHaveMembers(new[] { "A Fake.A::Fake.__FakeHolder<global::A>.Forward()" });
+            patchedTypeA.Properties[0].GetMethod.ShouldBe(forward);
         }
 
         [Test]
         [Category("NG")]
         public void IEquatableType()
         {
-            CreateAssemblyFromCode("public interface IEquatable<T> { bool Equals(T other); } public sealed class TimeZoneInfo : IEquatable<TimeZoneInfo> { public bool Equals(TimeZoneInfo other) { return false; } }", out AssemblyDefinition target, out AssemblyDefinition mscorlib);
+            var code = @"public interface IEquatable<T> 
+                         {
+                            bool Equals(T other);
+                         }
+                         public sealed class TimeZoneInfo : IEquatable<TimeZoneInfo> 
+                         {
+                             public bool Equals(TimeZoneInfo other) { return false; }
+                         }";
+            var originalAssembly = CreateAssembly(code);
+            var patchedAssembly = PatchAssembly(originalAssembly);
 
-            var fakeImpl = target.MainModule.Types.Single(t => t.FullName == "Fake._FakeImpl_IEquatable`2");
-            var equals = fakeImpl.Methods.Single(m => m.Name == "Equals");
-            equals.Parameters[0].ParameterType.ShouldBeSameType(fakeImpl.GenericParameters[0]);
+            var patchedIEquatable = patchedAssembly.MainModule.GetType("Fake._FakeImpl_IEquatable`2");
+            patchedIEquatable.ShouldNotBeNull();
 
-            equals.Body.Instructions.Select(i => i.ToString()).ShouldBe(new[]
+            var patchedEqualsMethod = patchedIEquatable.Methods.Single(m => m.Name == "Equals");
+            patchedEqualsMethod.Parameters[0].ParameterType.ShouldBeSameType(patchedIEquatable.GenericParameters[0]);
+
+            patchedEqualsMethod.Body.Instructions.Select(i => i.ToString()).ShouldBe(new[]
             {
                 "IL_0000: ldarg.0",
                 "IL_0001: ldfld IEquatable`1<__T> Fake._FakeImpl_IEquatable`2<T,__T>::__fake_forward",
@@ -479,9 +514,11 @@ namespace NSubstitute.Weaver.Tests.MscorlibWeaver
                 "IL_0018: ret"
             });
 
-            var timeZoneInfo = target.MainModule.Types.Single(t => t.FullName == "Fake.TimeZoneInfo");
-            var tzEquals = timeZoneInfo.Methods.Single(m => m.Name == "Equals");
-            tzEquals.Body.Instructions.Select(i => i.ToString()).ShouldBe(new[]
+            var patchedTimeZoneInfo = patchedAssembly.MainModule.GetType("Fake.TimeZoneInfo");
+            patchedTimeZoneInfo.ShouldNotBeNull();
+
+            var patchedTimeZoneInfoEquals = patchedTimeZoneInfo.Methods.Single(m => m.Name == "Equals");
+            patchedTimeZoneInfoEquals.Body.Instructions.Select(i => i.ToString()).ShouldBe(new[]
             {
                 "IL_0000: ldarg.0",
                 "IL_0001: ldfld TimeZoneInfo Fake.TimeZoneInfo::__fake_forward",
@@ -496,11 +533,19 @@ namespace NSubstitute.Weaver.Tests.MscorlibWeaver
         [Category("NG")]
         public void PInvokeGetsRewritten()
         {
-            CreateAssemblyFromCode("using System.Runtime.InteropServices; public class A { [DllImport(\"kernel32.dll\")] public static extern void DebugBreakProcess(uint dwProcessHandle); }", out AssemblyDefinition target, out AssemblyDefinition mscorlib);
+            var code = "using System.Runtime.InteropServices; " +
+                       "public class A " +
+                       "{ " +
+                           "[DllImport(\"kernel32.dll\")] " +
+                           "public static extern void DebugBreakProcess(uint dwProcessHandle); " +
+                        "}";
+            var originalAssembly = CreateAssembly(code);
+            var patchedAssembly = PatchAssembly(originalAssembly);
 
-            var a = target.MainModule.Types.Single(t => t.FullName == "Fake.A");
-            var debugBreak = a.Methods.Single(m => m.Name == "DebugBreakProcess");
+            var patchedTypeA = patchedAssembly.MainModule.GetType("Fake.A");
+            patchedTypeA.ShouldNotBeNull();
 
+            var debugBreak = patchedTypeA.Methods.Single(m => m.Name == "DebugBreakProcess");
             debugBreak.Body.Instructions.ShouldNotBeEmpty();
             debugBreak.HasBody.ShouldBeTrue();
         }
@@ -509,39 +554,66 @@ namespace NSubstitute.Weaver.Tests.MscorlibWeaver
         [Category("NG")]
         public void SpecializedInterfaceGeneratesForwardProperties()
         {
-            CreateAssemblyFromCode("public interface IA<T> {} public interface IB<T> : IA<T> {} public class B : IB<int> {}", out AssemblyDefinition target, out AssemblyDefinition mscorlib);
+            var code = @"public interface IA<T> {}
+                         public interface IB<T> : IA<T> {} 
+                         public class B : IB<int> {}";
+            var originalAssembly = CreateAssembly(code);
+            var patchedAssembly = PatchAssembly(originalAssembly);
 
-            var b = target.MainModule.Types.Single(t => t.FullName == "Fake.B");
-            b.Properties.Select(p => p.Name).ShouldBe(new[] { "Fake.__FakeHolder<global::B>.Forward", "Fake.__FakeHolder<global::IB`1<System.Int32>>.Forward", "Fake.__FakeHolder<global::IA`1<System.Int32>>.Forward" });
+            var patchedTypeB = patchedAssembly.MainModule.GetType("Fake.B");
+            patchedTypeB.Properties.ShouldHaveMembers(new[]
+            {
+                "B Fake.B::Fake.__FakeHolder<global::B>.Forward()",
+                "IB`1<System.Int32> Fake.B::Fake.__FakeHolder<global::IB`1<System.Int32>>.Forward()",
+                "IA`1<System.Int32> Fake.B::Fake.__FakeHolder<global::IA`1<System.Int32>>.Forward()"
+            });
+
+            patchedTypeB.Properties.Select(p => p.Name).ShouldBe(new[] { "Fake.__FakeHolder<global::B>.Forward", "Fake.__FakeHolder<global::IB`1<System.Int32>>.Forward", "Fake.__FakeHolder<global::IA`1<System.Int32>>.Forward" });
         }
 
         [Test]
         [Category("NG")]
         public void ReferenceFromGenericTypeToGenericInterface()
         {
-            CreateAssemblyFromCode("public interface IA<T> {} public class A<T> : IA<T> {}", out AssemblyDefinition target, out AssemblyDefinition original);
+            var code = @"public interface IA<T> {} 
+                         public class A<T> : IA<T> {}";
+            var originalAssembly = CreateAssembly(code);
+            var patchedAssembly = PatchAssembly(originalAssembly);
 
-            var interfaceType = original.MainModule.Types.Single(t => t.FullName == "IA`1");
-            var implType = original.MainModule.Types.Single(t => t.FullName == "A`1");
+            var interfaceType = originalAssembly.MainModule.GetType("IA`1");
+            interfaceType.ShouldNotBeNull();
+            var implType = originalAssembly.MainModule.GetType("A`1");
+            implType.ShouldNotBeNull();
 
-            var interfaceTypeDefinition = target.MainModule.Types.Single(t => t.FullName == "Fake.IA`2");
-            var implTypeDefinition = target.MainModule.Types.Single(t => t.FullName == "Fake.A`2");
+            var patchedInterfaceType = patchedAssembly.MainModule.GetType("Fake.IA`2");
+            patchedInterfaceType.ShouldNotBeNull();
+            var patchedImplType = patchedAssembly.MainModule.GetType("Fake.A`2");
+            patchedImplType.ShouldNotBeNull();
 
             var implTypeReference = interfaceType.MakeGenericInstanceType(implType.GenericParameters[0]);
-            var expected = interfaceTypeDefinition.MakeGenericInstanceType(implTypeDefinition.GenericParameters.ToArray());
+            var expectedImplTypeReference = patchedInterfaceType.MakeGenericInstanceType(patchedImplType.GenericParameters.ToArray());
 
             var sut = new ReferenceRewriter();
-            sut.Rewrite(target, implType, implTypeDefinition, implTypeReference).ShouldBeSameType(expected);
+            sut.Rewrite(patchedAssembly, implType, patchedImplType, implTypeReference)
+                .ShouldBeSameType(expectedImplTypeReference);
         }
 
         [Test]
         [Category("NG")]
         public void InterfaceReturningTypeParameter()
         {
-            CreateAssemblyFromCode("public interface IA<T> { T Foo(T other); } public class A<T> : IA<T> { public T Foo(T other) { return other; } }", out AssemblyDefinition target, out AssemblyDefinition mscorlib);
+            var code =
+                @"public interface IA<T> { T Foo(T other); }
+                  public class A<T> : IA<T> 
+                  {
+                      public T Foo(T other) { return other; }
+                  }";
+            var originalAssembly = CreateAssembly(code);
+            var patchedAssembly = PatchAssembly(originalAssembly);
 
-            var a = target.MainModule.Types.Single(t => t.Name == "A`2");
-            var foo = a.Methods.Single(m => m.Name == "Foo");
+            var patchedTypeA = patchedAssembly.MainModule.GetType("Fake.A`2");
+            patchedTypeA.ShouldNotBeNull();
+            var foo = patchedTypeA.Methods.Single(m => m.Name == "Foo");
 
             foo.Body.Instructions.Select(i => i.ToString()).ShouldBe(new[]
             {
@@ -575,23 +647,33 @@ namespace NSubstitute.Weaver.Tests.MscorlibWeaver
         [Category("NG")]
         public void MultipleInterfaceImplementationsGenerateSeparateForwardProperties()
         {
-            CreateAssemblyFromCode("public interface IA<T> {} public class A : IA<int>, IA<float> {}", out AssemblyDefinition target, out AssemblyDefinition mscorlib);
+            var code = @"public interface IA<T> {}
+                         public class A : IA<int>, IA<float> {}";
+            var originalAssembly = CreateAssembly(code);
+            var patchedAssembly = PatchAssembly(originalAssembly);
 
-            var a = target.MainModule.Types.Single(t => t.FullName == "Fake.A");
-            a.Interfaces.Select(i => i.FullName).ShouldBe(new[]
-                {
-                    "Fake.__FakeHolder`1<A>",
-                    "Fake.IA`2<Fake.SelfFakeHolder`1<System.Int32>,System.Int32>",
-                    "Fake.IA`2<Fake.SelfFakeHolder`1<System.Single>,System.Single>",
-                    "Fake.__FakeHolder`1<IA`1<System.Int32>>",
-                    "Fake.__FakeHolder`1<IA`1<System.Single>>"
-                }
+            var patchedTypeA = patchedAssembly.MainModule.GetType("Fake.A");
+            patchedTypeA.Interfaces.ShouldHaveMembers(new[]
+            {
+                "Fake.__FakeHolder`1<A>",
+                "Fake.IA`2<Fake.SelfFakeHolder`1<System.Int32>,System.Int32>",
+                "Fake.IA`2<Fake.SelfFakeHolder`1<System.Single>,System.Single>",
+                "Fake.__FakeHolder`1<IA`1<System.Int32>>",
+                "Fake.__FakeHolder`1<IA`1<System.Single>>"
+            }
             );
-            a.Properties.Select(p => p.Name).ShouldBe(new []{"Fake.__FakeHolder<global::A>.Forward", "Fake.__FakeHolder<global::IA`1<System.Int32>>.Forward", "Fake.__FakeHolder<global::IA`1<System.Single>>.Forward"});
+            patchedTypeA.Properties.ShouldHaveMembers(new []
+            {
+                "A Fake.A::Fake.__FakeHolder<global::A>.Forward()",
+                "IA`1<System.Int32> Fake.A::Fake.__FakeHolder<global::IA`1<System.Int32>>.Forward()",
+                "IA`1<System.Single> Fake.A::Fake.__FakeHolder<global::IA`1<System.Single>>.Forward()"
+            });
 
-            var fakeImplType = target.MainModule.Types.Single(t => t.FullName == "Fake._FakeImpl_IA`2");
-            var prop = fakeImplType.Properties.Single(p => p.Name == "Fake.__FakeHolder<global::IA`1<__T>>.Forward");
-            prop.PropertyType.ShouldBeOfType<GenericInstanceType>();
+            var patchedImplType = patchedAssembly.MainModule.GetType("Fake._FakeImpl_IA`2");
+            patchedImplType.ShouldNotBeNull();
+
+            var patchedImplTypeProperty = patchedImplType.Properties.Single(p => p.Name == "Fake.__FakeHolder<global::IA`1<__T>>.Forward");
+            patchedImplTypeProperty.PropertyType.ShouldBeOfType<GenericInstanceType>();
         }
 
         [Test]
@@ -669,23 +751,30 @@ namespace NSubstitute.Weaver.Tests.MscorlibWeaver
         [Category("NG")]
         public void InterfaceGeneratesWrapperClass()
         {
-            CreateAssemblyFromCode("public interface IA { int Foo(int x); IA Bar(IA y, int z); }", out AssemblyDefinition target, out AssemblyDefinition mscorlib);
+            var code = @"public interface IA { int Foo(int x); IA Bar(IA y, int z); }";
+            var originalAssembly = CreateAssembly(code);
+            var patchedAssembly = PatchAssembly(originalAssembly);
 
-            target.MainModule.Types.ShouldContain(t => t.FullName == "Fake.IA");
-            target.MainModule.Types.ShouldContain(t => t.FullName == "Fake._FakeImpl_IA");
+            var patchedInterface = patchedAssembly.MainModule.GetType("Fake.IA");
+            patchedInterface.ShouldNotBeNull();
+            var patchedImplementation = patchedAssembly.MainModule.GetType("Fake._FakeImpl_IA");
+            patchedImplementation.ShouldNotBeNull();
 
-            var targetInterface = target.MainModule.Types.Single(t => t.FullName == "Fake.IA");
-            var targetImplementation = target.MainModule.Types.Single(t => t.FullName == "Fake._FakeImpl_IA");
+            patchedImplementation.Interfaces.ShouldContainOnly(2);
+            patchedImplementation.Interfaces[0].ShouldBeSameType(patchedInterface);
 
-            targetImplementation.Interfaces.Count.ShouldBe(2);
-            targetImplementation.Interfaces[0].ShouldBeSameType(targetInterface);
+            patchedImplementation.Methods.ShouldHaveMembers(new[]
+            {
+                "System.Void Fake._FakeImpl_IA::.ctor(IA)",
+                "System.Int32 Fake._FakeImpl_IA::Foo(System.Int32)",
+                "Fake.IA Fake._FakeImpl_IA::Bar(Fake.IA,System.Int32)",
+                "IA Fake._FakeImpl_IA::Fake.__FakeHolder<global::IA>.get_Forward()"
+            });
 
-            targetImplementation.Methods.Select(m => m.Name).ShouldBe(new[] { ".ctor", "Foo", "Bar", "Fake.__FakeHolder<global::IA>.get_Forward" }, ignoreOrder: true);
+            var patchedFooMethod = patchedImplementation.Methods.Single(m => m.Name == "Foo");
+            patchedFooMethod.Parameters.ShouldHaveSingleItem();
 
-            var fooMethod = targetImplementation.Methods.Single(m => m.Name == "Foo");
-            fooMethod.Parameters.Count.ShouldBe(1);
-
-            fooMethod.Body.Instructions.InstructionsToString().ShouldBe(new[]
+            patchedFooMethod.Body.Instructions.InstructionsToString().ShouldBe(new[]
             {
                 "IL_0000: ldarg.0",
                 "IL_0001: ldfld IA Fake._FakeImpl_IA::__fake_forward",
@@ -694,8 +783,8 @@ namespace NSubstitute.Weaver.Tests.MscorlibWeaver
                 "IL_000f: ret"
             });
 
-            var barMethod = targetImplementation.Methods.Single(m => m.Name == "Bar");
-            barMethod.Body.Instructions.InstructionsToString().ShouldBe(new[]
+            var patchedBarMethod = patchedImplementation.Methods.Single(m => m.Name == "Bar");
+            patchedBarMethod.Body.Instructions.InstructionsToString().ShouldBe(new[]
             {
                 "IL_0000: ldarg.0",
                 "IL_0001: ldfld IA Fake._FakeImpl_IA::__fake_forward",
@@ -707,48 +796,83 @@ namespace NSubstitute.Weaver.Tests.MscorlibWeaver
                 "IL_001d: ret"
             });
 
-            var fakeForwardMethod = targetImplementation.Methods.Single(m => m.Name == "Fake.__FakeHolder<global::IA>.get_Forward");
-            fakeForwardMethod.Overrides.ShouldHaveSingleItem();
+            var patchedForwardMethod = patchedImplementation.Methods.Single(m => m.Name == "Fake.__FakeHolder<global::IA>.get_Forward");
+            patchedForwardMethod.Overrides.ShouldHaveSingleItem();
         }
 
         [Test]
         public void SelfReferentialMethodIsRewritten()
         {
-            CreateAssemblyFromCode("public class A { public A Run(A a) { return a; } }", out AssemblyDefinition target, out AssemblyDefinition mscorlib);
+            var code = @"public class A 
+                        {
+                            public A Run(A a) { return a; } 
+                        }";
+            var originalAssembly = CreateAssembly(code);
+            var patchedAssembly = PatchAssembly(originalAssembly);
 
-            target.MainModule.Types.ShouldContain(t => t.Name == "A");
+            var patchedTypeA = patchedAssembly.MainModule.GetType("Fake.A");
+            patchedTypeA.ShouldNotBeNull();
 
-            var targetType = target.MainModule.Types.Single(t => t.Name == "A");
-            targetType.Methods.Where(m => !m.IsConstructor).Select(m => m.Name).ShouldBe(new[] { "Run" });
+            patchedTypeA.Methods.ShouldHaveMembers(new []
+            {
+                "System.Void Fake.A::.ctor(A)",
+                "Fake.A Fake.A::Run(Fake.A)",
+                "A Fake.A::Fake.__FakeHolder<global::A>.get_Forward()"
+            });
 
-            var runMethod = targetType.Methods.Single(m => m.Name == "Run");
-            runMethod.ReturnType.ShouldBeSameType(targetType);
-            runMethod.Parameters.Count.ShouldBe(1);
-            runMethod.Parameters[0].ParameterType.ShouldBeSameType(targetType);
+            var patchedRunMethod = patchedTypeA.Methods.Single(m => m.Name == "Run");
+            patchedRunMethod.ReturnType.ShouldBeSameType(patchedTypeA);
+            patchedRunMethod.Parameters.ShouldHaveSingleItem();
+            patchedRunMethod.Parameters[0].ParameterType.ShouldBeSameType(patchedTypeA);
         }
 
         [Test]
+        //BUG: Fails on IsAbstract.ShouldBeTrue();
         public void SimpleAbstractClass()
         {
-            CreateAssemblyFromCode("public abstract class A {}", out AssemblyDefinition target, out AssemblyDefinition mscorlib);
+            var code = @"public abstract class A {}";
+            var originalAssembly = CreateAssembly(code);
+            var patchedAssembly = PatchAssembly(originalAssembly);
 
-            target.MainModule.Types.Count.ShouldBe(3);
-            target.MainModule.Types.ShouldContain(t => t.Name == "A");
-            target.MainModule.Types.ShouldContain(t => t.Name == "FakeForwardA");
+            patchedAssembly.MainModule.Types.ShouldHaveMembers(new []
+            {
+                "<Module>",
+                "Fake.__FakeHolder`1",
+                "Fake.SelfFakeHolder`1",
+                "Fake.A"
+            });
 
-            var targetType = target.MainModule.Types.Single(t => t.Name == "FakeForwardA");
-            targetType.ShouldHaveForwardConstructor(mscorlib.MainModule.Types.Single(t => t.Name == "A"));
-            targetType.ShouldHaveForwardField(mscorlib.MainModule.Types.Single(t => t.Name == "A"));
+            var patchedTypeA = patchedAssembly.MainModule.GetType("Fake.A");
+            patchedTypeA.IsAbstract.ShouldBeTrue();
+            
+            var originalTypeA = originalAssembly.MainModule.GetType("A");
+            patchedTypeA.ShouldHaveForwardField(originalTypeA);
+            patchedTypeA.ShouldHaveForwardConstructor(originalTypeA);
         }
 
         [Test]
+        //BUG: Fails on IsAbstract.ShouldBeTrue();
         public void SelfReferentialMethodInAbstractClass()
         {
-            CreateAssemblyFromCode("public abstract class A { public abstract A Run(A a); }", out AssemblyDefinition target, out AssemblyDefinition mscorlib);
+            var code = @"public abstract class A { public abstract A Run(A a); }";
+            var originalAssembly = CreateAssembly(code);
+            var patchedAssembly = PatchAssembly(originalAssembly);
 
-            target.MainModule.Types.Count.ShouldBe(3);
-            target.MainModule.Types.ShouldContain(t => t.Name == "A");
-            target.MainModule.Types.ShouldContain(t => t.Name == "FakeForwardA");
+            var patchedTypeA = patchedAssembly.MainModule.GetType("Fake.A");
+            patchedTypeA.IsAbstract.ShouldBeTrue();
+            patchedTypeA.ShouldNotBeNull();
+
+            patchedTypeA.Methods.ShouldHaveMembers(new[]
+            {
+                "System.Void Fake.A::.ctor(A)",
+                "Fake.A Fake.A::Run(Fake.A)",
+                "A Fake.A::Fake.__FakeHolder<global::A>.get_Forward()"
+            });
+
+            var patchedRunMethod = patchedTypeA.Methods.Single(m => m.Name == "Run");
+            patchedRunMethod.ReturnType.ShouldBeSameType(patchedTypeA);
+            patchedRunMethod.Parameters.ShouldHaveSingleItem();
+            patchedRunMethod.Parameters[0].ParameterType.ShouldBeSameType(patchedTypeA);
         }
 
         //[Test]
@@ -831,12 +955,12 @@ namespace NSubstitute.Weaver.Tests.MscorlibWeaver
 
             return patched;
         }
-
-        static void CreateAssemblyFromCode(string program, out AssemblyDefinition patched, out AssemblyDefinition original, [CallerMemberName] string originalAssemblyName = null)
-        {
-            original = CreateAssembly(program, originalAssemblyName);
-
-            patched = PatchAssembly(original);
-        }
+//
+//        static void CreateAssemblyFromCode(string program, out AssemblyDefinition patched, out AssemblyDefinition original, [CallerMemberName] string originalAssemblyName = null)
+//        {
+//            original = CreateAssembly(program, originalAssemblyName);
+//
+//            patched = PatchAssembly(original);
+//        }
     }
 }
