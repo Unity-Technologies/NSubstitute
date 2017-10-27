@@ -1,4 +1,4 @@
-﻿using System.Collections.Generic;
+using System.Collections.Generic;
 using System.Linq;
 using Mono.Cecil;
 using Mono.Cecil.Cil;
@@ -10,6 +10,11 @@ namespace NSubstitute.Weaver.Tests.MscorlibWeaver
 {
     static class ShouldlyExtensions
     {
+        public static void ShouldBeInstructionSet(this Collection<Instruction> instructions, params string[] expected)
+        {
+            instructions.Select(i => i.ToString()).ShouldBe(expected);
+        }
+
         public static void ShouldContainVirtualMethodCall(this MethodDefinition givenMethod, string expectedMethodCall)
         {
             var methodCalled = (givenMethod.Body.Instructions

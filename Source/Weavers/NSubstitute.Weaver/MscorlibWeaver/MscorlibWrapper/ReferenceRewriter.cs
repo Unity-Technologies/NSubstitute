@@ -20,9 +20,9 @@ namespace NSubstitute.Weaver.MscorlibWeaver.MscorlibWrapper
         }
 
         // assumes generic parameter has same names in original and target
-        public TypeReference Rewrite(AssemblyDefinition target, TypeDefinition type, TypeDefinition typeDefinition, TypeReference reference, MethodDefinition method = null, MethodDefinition methodDefinition = null, Dictionary<MethodDefinition, MethodDefinition> methodMap = null, bool lookupFake = true, TypeReference selfFakeHolder = null)
+        public TypeReference Rewrite(AssemblyDefinition target, TypeDefinition type, TypeDefinition typeDefinition, TypeReference reference, MethodDefinition method = null, MethodDefinition methodDefinition = null, Dictionary<MethodDefinition, MethodDefinition> methodMap = null, bool lookupFake = true, TypeReference selfFakeHolder = null, bool useFakeForGenericParameters = false)
         {
-            return Rewrite(target, reference, methodMap, lookupFake, selfFakeHolder: selfFakeHolder);
+            return Rewrite(target, reference, methodMap, lookupFake, useFakeForGenericParameters, selfFakeHolder);
         }
 
         public TypeReference Rewrite(AssemblyDefinition targetAssembly, TypeReference reference, Dictionary<MethodDefinition, MethodDefinition> methodMap, bool lookupFake = true, bool useFakeForGenericParameters = false, TypeReference selfFakeHolder = null)
@@ -153,6 +153,12 @@ namespace NSubstitute.Weaver.MscorlibWeaver.MscorlibWrapper
                 if (genericParameter.Position < 0 || genericParameter.Position >= targetMethod.GenericParameters.Count)
                     throw new InvalidOperationException("Unknown generic method type parameter");
 
+                if (!lookupFake && useFakeForGenericParameters)
+                {
+                    return targetMethod.GenericParameters[
+                        genericParameter.Position + targetMethod.GenericParameters.Count / 2];
+                }
+
                 return targetMethod.GenericParameters[genericParameter.Position];
             }
             else
@@ -211,7 +217,7 @@ namespace NSubstitute.Weaver.MscorlibWeaver.MscorlibWrapper
         }
 
         public TypeReference ReplaceGenericParameter(TypeReference reference, GenericParameter[] original,
-            GenericParameter[] target)
+            TypeReference[] target)
         {
             if (reference == null)
                 return null;
@@ -358,12 +364,12 @@ namespace NSubstitute.Weaver.MscorlibWeaver.MscorlibWrapper
         }
 
 
-        public MethodReference Rewrite(AssemblyDefinition target, TypeDefinition type, TypeDefinition typeDefinition, MethodDefinition method, MethodDefinition methodDefinition, MethodReference methodReference, Dictionary<MethodDefinition, MethodDefinition> methodMap)
+        public MethodReference Rewrite(AssemblyDefinition target, TypeDefinition type, TypeDefinition typeDefinition, MethodDefinition method, MethodDefinition methodDefinition, MethodReference methodReference, Dictionary<MethodDefinition, MethodDefinition> methodMap, TypeReference selfFakeHolder)
         {
             var methodDeclaringType = methodReference.DeclaringType;
             var rewrittenMethodDeclaringType = Rewrite(target, type, typeDefinition, methodDeclaringType, method, methodDefinition);
             if (rewrittenMethodDeclaringType.Namespace != k_FakeNamespace && !rewrittenMethodDeclaringType.Namespace.StartsWith($"{k_FakeNamespace}."))
-                return Reinstantiate(target, type, typeDefinition, method, methodDefinition, methodReference, methodMap);
+                return Reinstantiate(target, type, typeDefinition, method, methodDefinition, methodReference, methodMap, selfFakeHolder);
 
             var rewrittenMethodDeclaringTypeDefinition = rewrittenMethodDeclaringType.Resolve();
             MethodDefinition candidate;
@@ -373,15 +379,22 @@ namespace NSubstitute.Weaver.MscorlibWeaver.MscorlibWrapper
             return candidate;
         }
 
-        public MethodReference Reinstantiate(AssemblyDefinition target, TypeDefinition type, TypeDefinition typeDefinition, MethodDefinition method, MethodDefinition methodDefinition, MethodReference reference, Dictionary<MethodDefinition, MethodDefinition> methodMap)
+        public MethodReference Reinstantiate(AssemblyDefinition target, TypeDefinition type, TypeDefinition typeDefinition, MethodDefinition method, MethodDefinition methodDefinition, MethodReference reference, Dictionary<MethodDefinition, MethodDefinition> methodMap, TypeReference selfFakeHolder)
         {
             if (reference.IsGenericInstance)
             {
                 var originalMethod = target.MainModule.Import(reference.Resolve());
                 var targetMethod = new GenericInstanceMethod(originalMethod);
                 var methodInstance = (GenericInstanceMethod)reference;
+                var correspondingMethod = methodMap[methodInstance.Resolve()];
+                var genericMap = CollectGenericParameterRewrites(correspondingMethod);
                 foreach (var arg in methodInstance.GenericArguments)
-                    targetMethod.GenericArguments.Add(Rewrite(target, type, typeDefinition, arg, method, methodDefinition, methodMap, false));
+                {
+                    var genericArgument = Rewrite(target, type, typeDefinition, arg, method, methodDefinition, methodMap, false);
+                    genericArgument = ReplaceGenericParameter(genericArgument, genericMap.Item1, genericMap.Item2);
+                    targetMethod.GenericArguments.Add(genericArgument);
+                }
+
                 return targetMethod;
             }
 
@@ -389,8 +402,14 @@ namespace NSubstitute.Weaver.MscorlibWeaver.MscorlibWrapper
             {
                 var originalMethod = target.MainModule.Import(reference);
                 var targetMethod = new GenericInstanceMethod(originalMethod);
+                var correspondingMethod = methodMap[reference.Resolve()];
+                var genericMap = CollectGenericParameterRewrites(correspondingMethod);
                 foreach (var arg in reference.GenericParameters)
-                    targetMethod.GenericArguments.Add(Rewrite(target, type, typeDefinition, arg, method, methodDefinition, methodMap, false));
+                {
+                    var genericArgument = Rewrite(target, type, typeDefinition, arg, method, methodDefinition, methodMap, false);
+                    genericArgument = ReplaceGenericParameter(genericArgument, genericMap.Item1, genericMap.Item2);
+                    targetMethod.GenericArguments.Add(genericArgument);
+                }
 
                 return targetMethod;
             }
@@ -411,6 +430,70 @@ namespace NSubstitute.Weaver.MscorlibWeaver.MscorlibWrapper
             }
 
             return null;
+        }
+
+        public Tuple<GenericParameter[], GenericParameter[]> CollectGenericParameterRewrites(TypeReference reference)
+        {
+            Tuple<GenericParameter[], GenericParameter[]> r;
+            if (reference.IsNested)
+            {
+                r = CollectGenericParameterRewrites(reference.DeclaringType);
+            }
+            else
+            {
+                r = new Tuple<GenericParameter[], GenericParameter[]>(new GenericParameter[0], new GenericParameter[0]);
+            }
+
+            if (reference.HasGenericParameters)
+            {
+                var fakeGenericParameters = reference.GenericParameters.Take(reference.GenericParameters.Count / 2);
+                var origGenericParameters = reference.GenericParameters.Skip(reference.GenericParameters.Count / 2);
+
+                r = Tuple.Create(r.Item1.Concat(fakeGenericParameters).ToArray(),
+                    r.Item2.Concat(origGenericParameters).ToArray());
+            }
+
+            return r;
+        }
+
+        public Tuple<GenericParameter[], GenericParameter[]> CollectGenericParameterRewrites(MethodReference reference)
+        {
+            var declaringTypeParameters = CollectGenericParameterRewrites(reference.DeclaringType);
+            if (reference.HasGenericParameters)
+            {
+                var fakeGenericParameters = reference.GenericParameters.Take(reference.GenericParameters.Count / 2);
+                var origGenericParameters = reference.GenericParameters.Skip(reference.GenericParameters.Count / 2);
+                return Tuple.Create(declaringTypeParameters.Item1.Concat(fakeGenericParameters).ToArray(),
+                    declaringTypeParameters.Item2.Concat(origGenericParameters).ToArray());
+            }
+            return declaringTypeParameters;
+        }
+
+        public GenericParameter[] CollectGenericParameters(TypeReference reference)
+        {
+            GenericParameter[] r;
+            if (reference.IsNested)
+            {
+                r = CollectGenericParameters(reference.DeclaringType);
+            }
+            else
+            {
+                r = new GenericParameter[0];
+            }
+
+            if (reference.HasGenericParameters)
+            {
+                r = r.Concat(reference.GenericParameters).ToArray();
+            }
+
+            return r;
+
+        }
+
+        public GenericParameter[] CollectGenericParameters(MethodReference reference)
+        {
+            var declaringTypeParameters = CollectGenericParameters(reference.DeclaringType);
+            return declaringTypeParameters.Concat(reference.GenericParameters).ToArray();
         }
     }
 }

@@ -20,7 +20,7 @@ namespace NSubstitute.Weaver.Tests.MscorlibWeaver
     [TestFixture]
     class AcceptanceTests
     {
-        const string pathPrefix = ".";
+        const string pathPrefix = @"D:\src\verify";
         //TODO: Add a test Generic type with non generic nested type (NG test).
 
         [Test]
@@ -379,10 +379,12 @@ namespace NSubstitute.Weaver.Tests.MscorlibWeaver
             "A", "Foo", 1, "RV_A_Param_OfT",
             "IL_0000: ldarg.0",
             "IL_0001: ldfld A Fake.A::__fake_forward",
-            "IL_0006: ldarg x",
-            "IL_000a: callvirt A A::Foo<T>(T)",
-            "IL_000f: newobj System.Void Fake.A::.ctor(A)",
-            "IL_0014: ret")]
+            "IL_0006: ldarga.s x",
+            "IL_0008: constrained. T",
+            "IL_000e: callvirt T Fake.__FakeHolder`1<__T>::get_Forward()",
+            "IL_0013: callvirt A A::Foo<__T>(T)",
+            "IL_0018: newobj System.Void Fake.A::.ctor(A)",
+            "IL_001d: ret")]
         [Category("NG")]
         public void WrapMethod(string program, string typeName, string methodName, int parameterCount, string suffix, params string[] result)
         {
@@ -526,6 +528,94 @@ namespace NSubstitute.Weaver.Tests.MscorlibWeaver
 
             var sut = new ReferenceRewriter();
             sut.Rewrite(target, implType, implTypeDefinition, implTypeReference).ShouldBeSameType(expected);
+        }
+
+        [Test]
+        [Category("NG")]
+        public void GenericMethodGetsRewrittenAndGenericTypeParameterConstraint()
+        {
+            var code =
+                @"public class B<T, U> {}
+                  public class A {
+                    public X Foo<X, Y>(B<X, Y> other) where X : new()
+                    {
+                      return new X();
+                    }
+                    public int Bar() { return Foo(new B<int, int>()); }
+                  }";
+            CreateAssemblyFromCode(code, out AssemblyDefinition target, out AssemblyDefinition original);
+
+            var a = target.MainModule.Types.Single(t => t.Name == "A");
+            var foo = a.Methods.Single(m => m.Name == "Foo");
+            foo.GenericParameters.Select(gp => gp.Name).ShouldBe(new[] {"X", "Y", "__X", "__Y"});
+            foo.GenericParameters[0].HasDefaultConstructorConstraint.ShouldBeTrue();
+            foo.GenericParameters[0].Constraints.Select(c => c.FullName).ShouldBe(new []{"Fake.__FakeHolder`1<__X>"});
+            foo.GenericParameters[1].Constraints.Select(c => c.FullName).ShouldBe(new[] {"Fake.__FakeHolder`1<__Y>"});
+            foo.GenericParameters[2].HasDefaultConstructorConstraint.ShouldBeTrue();
+            foo.GenericParameters[3].HasDefaultConstructorConstraint.ShouldBeFalse();
+            foo.ReturnType.ShouldBeSameType(foo.GenericParameters[0]);
+            foo.Parameters.Single().ParameterType.FullName.ShouldBe("Fake.B`4<X,Y,__X,__Y>");
+            foo.Body.Instructions.ShouldBeInstructionSet(
+                "IL_0000: ldarg.0",
+                "IL_0001: ldfld A Fake.A::__fake_forward",
+                "IL_0006: ldarg other",
+                "IL_000a: callvirt T Fake.__FakeHolder`1<B`2<__X,__Y>>::get_Forward()",
+                "IL_000f: callvirt X A::Foo<__X,__Y>(B`2<X,Y>)",
+                "IL_0014: stloc.0",
+                "IL_0015: ldtoken X",
+                "IL_001a: call System.Type System.Type::GetTypeFromHandle(System.RuntimeTypeHandle)",
+                "IL_001f: ldc.i4.1",
+                "IL_0020: newarr System.Object",
+                "IL_0025: dup",
+                "IL_0026: ldc.i4.0",
+                "IL_0027: ldc.i4.1",
+                "IL_0028: newarr __X",
+                "IL_002d: dup",
+                "IL_002e: ldc.i4.0",
+                "IL_002f: ldloc.0",
+                "IL_0030: stelem.any __X",
+                "IL_0035: stelem.ref",
+                "IL_0036: call System.Object System.Activator::CreateInstance(System.Type,System.Object[])",
+                "IL_003b: unbox.any X",
+                "IL_0040: ret"
+            );
+            var getForward = (MethodReference)foo.Body.Instructions.First(i => i.OpCode == OpCodes.Callvirt && i.Operand.ToString().Contains("get_Forward()")).Operand;
+            getForward.DeclaringType.ShouldBeOfType<GenericInstanceType>();
+            var getForwardType = (GenericInstanceType)getForward.DeclaringType;
+            getForwardType.GenericArguments.Count.ShouldBe(1);
+            var getForwardArgumentType = (TypeReference) getForwardType.GenericArguments[0];
+            getForwardArgumentType.ShouldBeOfType<GenericInstanceType>();
+            var getForwardArgumentTypeInstance = (GenericInstanceType) getForwardArgumentType;
+            getForwardArgumentTypeInstance.GenericArguments[0].ShouldBeOfType<GenericParameter>();
+            ((GenericParameter) getForwardArgumentTypeInstance.GenericArguments[0]).DeclaringMethod.ShouldNotBeNull();
+            getForwardArgumentTypeInstance.GenericArguments[1].ShouldBeOfType<GenericParameter>();
+            ((GenericParameter)getForwardArgumentTypeInstance.GenericArguments[1]).DeclaringMethod.ShouldNotBeNull();
+            getForwardArgumentTypeInstance.GenericArguments[0].ShouldBe(foo.GenericParameters[2]);
+            getForwardArgumentTypeInstance.GenericArguments[1].ShouldBe(foo.GenericParameters[3]);
+
+            var bar = a.Methods.Single(m => m.Name == "Bar");
+            bar.Body.Instructions.ShouldBeInstructionSet(
+                "IL_0000: ldarg.0",
+                "IL_0001: ldfld A Fake.A::__fake_forward",
+                "IL_0006: callvirt System.Int32 A::Bar()",
+                "IL_000b: ret"
+            );
+        }
+
+        [Test]
+        [Category("NG")]
+        public void NestedTypeInGenericType()
+        {
+            CreateAssemblyFromCode("public class A<T> { public class B {} }", out AssemblyDefinition target, out AssemblyDefinition original);
+
+            var a = target.MainModule.Types.Single(t => t.Name == "A`2");
+            var b = a.NestedTypes[0];
+            b.FullName.ShouldBe("Fake.A`2/B");
+            b.Interfaces.Count.ShouldBe(1);
+            var fakeHolder = b.Interfaces.Single();
+            fakeHolder.FullName.ShouldBe("Fake.__FakeHolder`1<A`1/B<__T>>");
+
+            b.GenericParameters.Count.ShouldBe(2);
         }
 
         [Test]
@@ -810,7 +900,7 @@ namespace NSubstitute.Weaver.Tests.MscorlibWeaver
 
         static AssemblyDefinition PatchAssembly(AssemblyDefinition original)
         {
-            var patched = AssemblyDefinition.CreateAssembly(new AssemblyNameDefinition($"{original.Name}.fake",
+            var patched = AssemblyDefinition.CreateAssembly(new AssemblyNameDefinition($"{original.Name.Name}.fake",
                     original.Name.Version),
                 original.MainModule.Name, ModuleKind.Dll);
 #if PEVERIFY
@@ -821,7 +911,7 @@ namespace NSubstitute.Weaver.Tests.MscorlibWeaver
                 skipType: tr => tr.Namespace == "System" || tr.Namespace.StartsWith("System."));
             copier.Copy(original, ref patched, null, original.MainModule.Types.Select(t => t.FullName).ToArray());
 
-            WriteForPeVerify(patched, original.Name.ToString());
+            WriteForPeVerify(patched, original.Name.Name.ToString());
 
             return patched;
         }

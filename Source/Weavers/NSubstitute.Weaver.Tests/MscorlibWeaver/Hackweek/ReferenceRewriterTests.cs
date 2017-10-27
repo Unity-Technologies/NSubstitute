@@ -186,7 +186,7 @@ namespace NSubstitute.Weaver.Tests.MscorlibWeaver.Hackweek
             var methodDefinition = typeDefinition.WithMethod("Method", MethodAttributes.Public).WithMethodGenericParameters("T");
             methodDefinition.WithReturnType(methodDefinition.Method.GenericParameters[0]);
 
-            var methodMap = new Dictionary<MethodDefinition, MethodDefinition> { { method, methodDefinition } };
+            var methodMap = new Dictionary<MethodDefinition, MethodDefinition> { { method.Method, methodDefinition } };
 
             sut.Rewrite(target, type, typeDefinition, method.Method.ReturnType, method, methodDefinition, methodMap).ShouldBe(methodDefinition.Method.ReturnType);
             Should.Throw<InvalidOperationException>(() => sut.Rewrite(target, type, typeDefinition, new GenericParameter("Q", simpleType), method, methodDefinition));
@@ -198,7 +198,7 @@ namespace NSubstitute.Weaver.Tests.MscorlibWeaver.Hackweek
             original.WithType("", "A").WithMethod("Method");
             target.WithType("Fake", "A").WithMethod("Method");
 
-            sut.Reinstantiate(original, original, target, original.Method, target, original, null).ShouldBe(original.Method);
+            sut.Reinstantiate(original, original, target, original.Method, target, original, null, null).ShouldBe(original.Method);
         }
 
         [Test]
@@ -207,7 +207,7 @@ namespace NSubstitute.Weaver.Tests.MscorlibWeaver.Hackweek
             original.WithType("", "A").WithMethod("Method", MethodAttributes.Public).WithReturnType(original).WithParameter("arg", original);
             target.WithType("Fake", "A").WithMethod("Method", MethodAttributes.Public).WithReturnType(target).WithParameter("arg", target);
 
-            var actual = sut.Reinstantiate(original, original, target, original.Method, target, original, null);
+            var actual = sut.Reinstantiate(original, original, target, original.Method, target, original, null, null);
             
             actual.ShouldBeSameMethod(original.Method);
         }
@@ -225,29 +225,32 @@ namespace NSubstitute.Weaver.Tests.MscorlibWeaver.Hackweek
 
             var reference = original;
 
-            sut.Reinstantiate(target, type, typeDefinition, original.Method, target, reference, null).ShouldBeSameMethod(original.Method);
+            sut.Reinstantiate(target, type, typeDefinition, original.Method, target, reference, null, null).ShouldBeSameMethod(original.Method);
         }
 
         [Test]
         public void GenericMethodRewrite()
         {
-            var type = original.WithType("", "A");
-            var method = original.WithMethod("Method").WithMethodGenericParameters("T").Method;
-            original.WithReturnType(method.GenericParameters[0]).WithParameter("arg", method.GenericParameters[0]);
+            //var type = original.WithType("", "A");
+            //var method = original.WithMethod("Method").WithMethodGenericParameters("T").Method;
+            //original.WithReturnType(method.GenericParameters[0]).WithParameter("arg", method.GenericParameters[0]);
 
-            var typeDefinition = target.WithType("", "A");
-            var methodDefinition = target.WithMethod("Method").WithMethodGenericParameters("T").Method;
-            target.WithReturnType(methodDefinition.GenericParameters[0]).WithParameter("arg", methodDefinition.GenericParameters[0]);
+            //var typeDefinition = target.WithType("Fake", "A");
+            //var methodDefinition = target.WithMethod("Method").WithMethodGenericParameters("T", "__T").Method;
+            //target.WithReturnType(methodDefinition.GenericParameters[0]).WithParameter("arg", methodDefinition.GenericParameters[0]);
 
-            var reference = new GenericInstanceMethod(method);
-            reference.GenericArguments.Add(type);
+            //var reference = sut.MakeGenericMethod(target, method, type);
+            //reference.Resolve().FullName.ShouldBe(method.FullName);
 
-            var actual = sut.Reinstantiate(target, type, typeDefinition, original.Method, target, reference, null);
+            //var methodMap = new Dictionary<string, MethodDefinition> {{method.FullName, methodDefinition}};
 
-            var expected = new GenericInstanceMethod(method);
-            expected.GenericArguments.Add(typeDefinition);
+            //original.Target.Write("A.dll");
 
-            actual.ShouldBeSameMethod(expected);
+            //var actual = sut.Reinstantiate(target, type, typeDefinition, method, target, reference, methodMap, null);
+
+            //var expected = sut.MakeGenericMethod(target, method, methodDefinition.GenericParameters[1]);
+
+            //actual.ShouldBeSameMethod(expected);
         }
 
         [Test]
@@ -296,6 +299,86 @@ namespace NSubstitute.Weaver.Tests.MscorlibWeaver.Hackweek
             actual.FullName.ShouldBe("T&");
             var gp = (GenericParameter)actual.GetElementType();
             gp.DeclaringMethod.ShouldBeSameMethod(methodDefinition);
+        }
+
+        [Test]
+        public void MethodReinstantiationUsesOriginalGenericParameters()
+        {
+            var genericType = original.WithType("", "B`1").WithGenericParameters("T").Type;
+            var type = original.WithType("", "A");
+            var method = original.WithMethod("Foo").WithMethodGenericParameters("T").WithParameter("arg", genericType.MakeGenericInstanceType(original.Method.GenericParameters[0])).Method;
+
+            var simpleTypeDefinition = target.WithType("Fake", "Simple").Type;
+            var genericTypeDefinition = target.WithType("Fake", "B`2").WithGenericParameters("T", "__T").Type;
+            var typeDefinition = target.WithType("Fake", "A");
+            var methodDefinition = target.WithMethod("Foo").WithMethodGenericParameters("T", "__T").WithParameter("arg", genericTypeDefinition.MakeGenericInstanceType(target.Method.GenericParameters.ToArray())).Method;
+
+            var methodMap = new Dictionary<MethodDefinition, MethodDefinition> {{method, methodDefinition}};
+
+            var genericInstanceReference = new GenericInstanceMethod(method);
+            genericInstanceReference.GenericArguments.Add(method.GenericParameters[0]);
+
+            original.Target.Write("A.dll");
+            target.Target.MainModule.AssemblyReferences.Add(new AssemblyNameReference("A", new Version(1, 0)));
+
+            var actual = sut.Reinstantiate(target, type, typeDefinition, method, methodDefinition, genericInstanceReference, methodMap, null);
+
+            var expected = "System.Void A::Foo<__T>(B`1<T>)";
+            actual.FullName.ShouldBe(expected);
+
+            actual = sut.Reinstantiate(target, type, typeDefinition, method, methodDefinition, method, methodMap, null);
+            actual.FullName.ShouldBe(expected);
+        }
+
+        [Test]
+        public void MakeGenericMethod()
+        {
+            //var method = original.WithType("", "A").WithMethod("Foo").WithMethodGenericParameters("T").WithParameter("arg", original.Method.GenericParameters[0]).Method;
+            //method.ReturnType = method.GenericParameters[0];
+
+            //var methodDefinition = target.WithType("Fake", "A").WithMethod("Foo")
+            //    .WithMethodGenericParameters("T", "__T").WithParameter("arg", target.Method.GenericParameters[0]).Method;
+
+            //var methodMap = new Dictionary<MethodDefinition, MethodDefinition> {{method, methodDefinition}};
+
+            //var actual = sut.MakeGenericMethod(target, method, methodDefinition.GenericParameters[1]);
+
+            //actual.FullName.ShouldBe("__T A::Foo<__T>(__T)");
+            //actual.DeclaringType.FullName.ShouldBe(original.Type.FullName);
+        }
+
+        [Test]
+        public void CollectGenericParametersForRewrite()
+        {
+            var a = new TypeDefinition("Fake", "A", TypeAttributes.Public | TypeAttributes.Class);
+            a.GenericParameters.Add(new GenericParameter("T", a));
+            a.GenericParameters.Add(new GenericParameter("__T", a));
+
+            var b = new TypeDefinition("Fake", "B", TypeAttributes.Public | TypeAttributes.Class);
+            b.GenericParameters.Add(new GenericParameter("U", b));
+            b.GenericParameters.Add(new GenericParameter("__U", b));
+            a.NestedTypes.Add(b);
+
+            var c = new TypeDefinition("Fake", "C", TypeAttributes.Public | TypeAttributes.Class);
+            c.GenericParameters.Add(new GenericParameter("V", c));
+            c.GenericParameters.Add(new GenericParameter("__V", c));
+            b.NestedTypes.Add(c);
+
+            var d = new TypeDefinition("Fake", "D", TypeAttributes.Public | TypeAttributes.Class);
+            c.NestedTypes.Add(d);
+
+            var m = new MethodDefinition("Foo", MethodAttributes.Public, target.Target.MainModule.TypeSystem.Void);
+            m.GenericParameters.Add(new GenericParameter("X", m));
+            m.GenericParameters.Add(new GenericParameter("__X", m));
+            d.Methods.Add(m);
+
+            target.Target.MainModule.Types.Add(a);
+
+            var result = sut.CollectGenericParameterRewrites(m);
+            result.Item1.ShouldBe(new[]
+                {a.GenericParameters[0], b.GenericParameters[0], c.GenericParameters[0], m.GenericParameters[0]});
+            result.Item2.ShouldBe(new[]
+                {a.GenericParameters[1], b.GenericParameters[1], c.GenericParameters[1], m.GenericParameters[1]});
         }
 
         public class AssemblyTypeBuilder
