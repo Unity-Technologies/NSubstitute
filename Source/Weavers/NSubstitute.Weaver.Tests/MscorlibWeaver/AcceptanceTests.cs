@@ -1,4 +1,4 @@
-﻿#define PEVERIFY
+#define PEVERIFY
 
 using System;
 using System.IO;
@@ -613,9 +613,10 @@ namespace NSubstitute.Weaver.Tests.MscorlibWeaver
                     }
                     public int Bar() { return Foo(new B<int, int>()); }
                   }";
-            CreateAssemblyFromCode(code, out AssemblyDefinition target, out AssemblyDefinition original);
+            var originalAssembly = CreateAssembly(code);
+            var patchedAssembly = PatchAssembly(originalAssembly);
 
-            var a = target.MainModule.Types.Single(t => t.Name == "A");
+            var a = patchedAssembly.MainModule.Types.Single(t => t.Name == "A");
             var foo = a.Methods.Single(m => m.Name == "Foo");
             foo.GenericParameters.Select(gp => gp.Name).ShouldBe(new[] {"X", "Y", "__X", "__Y"});
             foo.GenericParameters[0].HasDefaultConstructorConstraint.ShouldBeTrue();
@@ -676,9 +677,10 @@ namespace NSubstitute.Weaver.Tests.MscorlibWeaver
         [Category("NG")]
         public void NestedTypeInGenericType()
         {
-            CreateAssemblyFromCode("public class A<T> { public class B {} }", out AssemblyDefinition target, out AssemblyDefinition original);
+            var originalAssembly = CreateAssembly("public class A<T> { public class B {} }");
+            var patchedAssembly = PatchAssembly(originalAssembly);
 
-            var a = target.MainModule.Types.Single(t => t.Name == "A`2");
+            var a = patchedAssembly.MainModule.Types.Single(t => t.Name == "A`2");
             var b = a.NestedTypes[0];
             b.FullName.ShouldBe("Fake.A`2/B");
             b.Interfaces.Count.ShouldBe(1);
@@ -692,17 +694,18 @@ namespace NSubstitute.Weaver.Tests.MscorlibWeaver
         [Category("NG")]
         public void NestedGenericTypeInNonGenericType()
         {
-            CreateAssemblyFromCode("public class A { public class B<T> { } }", out AssemblyDefinition target, out AssemblyDefinition original);
+            var originalAssembly = CreateAssembly("public class A { public class B<T> { } }");
+            var patchedAssembly = PatchAssembly(originalAssembly);
 
-            var originalA = original.MainModule.Types.Single(t => t.Name == "A");
+            var originalA = originalAssembly.MainModule.Types.Single(t => t.Name == "A");
             var originalB = originalA.NestedTypes[0];
 
-            var a = target.MainModule.Types.Single(t => t.Name == "A");
+            var a = patchedAssembly.MainModule.Types.Single(t => t.Name == "A");
             var b = a.NestedTypes[0];
             b.FullName.ShouldBe("Fake.A/B`2");
 
             var rewriter = new ReferenceRewriter();
-            var reinstantiatedType = rewriter.Rewrite(target, originalA, a, originalB.MakeGenericInstanceType(originalB.GenericParameters[0]),
+            var reinstantiatedType = rewriter.Rewrite(patchedAssembly, originalA, a, originalB.MakeGenericInstanceType(originalB.GenericParameters[0]),
                 null, null, null, true, null, false);
 
             reinstantiatedType.FullName.ShouldBe("Fake.A/B`2<T, __T>");
@@ -712,10 +715,12 @@ namespace NSubstitute.Weaver.Tests.MscorlibWeaver
         [Category("NG")]
         public void GenericTypeWithGenericInterfaceGenericParametersAreProvidedByGenericType()
         {
-            CreateAssemblyFromCode("public interface IA<T> {} public class A<T1> : IA<IA<T1>> {}", out AssemblyDefinition target, out AssemblyDefinition original);
+            var originalAssembly = CreateAssembly("public interface IA<T> {} public class A<T1> : IA<IA<T1>> {}");
+            var patchedAssembly = PatchAssembly(originalAssembly);
 
-            var a = target.MainModule.Types.Single(t => t.Name == "A`2");
+            var a = patchedAssembly.MainModule.Types.Single(t => t.Name == "A`2");
             var iaInterface = (GenericInstanceType)a.Interfaces.Single(iface => iface.Name == "IA`2");
+            // TODO: finish test
             //new System.Linq.SystemCore_EnumerableDebugView<Mono.Cecil.TypeReference>(((Mono.Cecil.GenericInstanceType)(new System.Linq.SystemCore_EnumerableDebugView<Mono.Cecil.TypeReference>(((Mono.Cecil.GenericInstanceType)ifaceReference).GenericArguments).Items[1])).GenericArguments).Items[0]
         }
 
