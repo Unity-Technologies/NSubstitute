@@ -620,6 +620,37 @@ namespace NSubstitute.Weaver.Tests.MscorlibWeaver
 
         [Test]
         [Category("NG")]
+        public void NestedGenericTypeInNonGenericType()
+        {
+            CreateAssemblyFromCode("public class A { public class B<T> { } }", out AssemblyDefinition target, out AssemblyDefinition original);
+
+            var originalA = original.MainModule.Types.Single(t => t.Name == "A");
+            var originalB = originalA.NestedTypes[0];
+
+            var a = target.MainModule.Types.Single(t => t.Name == "A");
+            var b = a.NestedTypes[0];
+            b.FullName.ShouldBe("Fake.A/B`2");
+
+            var rewriter = new ReferenceRewriter();
+            var reinstantiatedType = rewriter.Rewrite(target, originalA, a, originalB.MakeGenericInstanceType(originalB.GenericParameters[0]),
+                null, null, null, true, null, false);
+
+            reinstantiatedType.FullName.ShouldBe("Fake.A/B`2<T, __T>");
+        }
+
+        [Test]
+        [Category("NG")]
+        public void GenericTypeWithGenericInterfaceGenericParametersAreProvidedByGenericType()
+        {
+            CreateAssemblyFromCode("public interface IA<T> {} public class A<T1> : IA<IA<T1>> {}", out AssemblyDefinition target, out AssemblyDefinition original);
+
+            var a = target.MainModule.Types.Single(t => t.Name == "A`2");
+            var iaInterface = (GenericInstanceType)a.Interfaces.Single(iface => iface.Name == "IA`2");
+            //new System.Linq.SystemCore_EnumerableDebugView<Mono.Cecil.TypeReference>(((Mono.Cecil.GenericInstanceType)(new System.Linq.SystemCore_EnumerableDebugView<Mono.Cecil.TypeReference>(((Mono.Cecil.GenericInstanceType)ifaceReference).GenericArguments).Items[1])).GenericArguments).Items[0]
+        }
+
+        [Test]
+        [Category("NG")]
         public void InterfaceReturningTypeParameter()
         {
             CreateAssemblyFromCode("public interface IA<T> { T Foo(T other); } public class A<T> : IA<T> { public T Foo(T other) { return other; } }", out AssemblyDefinition target, out AssemblyDefinition mscorlib);
