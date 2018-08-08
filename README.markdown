@@ -1,3 +1,38 @@
+DO NOT USE
+DO NOT USE
+DO NOT USE
+DO NOT USE
+DO NOT USE
+DO NOT USE
+DO NOT USE
+DO NOT USE
+DO NOT USE
+DO NOT USE
+
+
+:D
+
+
+I realized that we were continuing on the approach we took at Hackweek, which was intended to just get stuff working fast, but was not actually the right way to do things. We were forking NSubstitute and hacking at it, patching 'self' with Fody, using an overcomplicated patch mechanism, and much more.
+
+This project is hereby abandoned in favor of https://github.com/Unity-Technologies/NSubstitute.Elevated.
+
+
+
+
+DO NOT USE
+DO NOT USE
+DO NOT USE
+DO NOT USE
+DO NOT USE
+DO NOT USE
+DO NOT USE
+DO NOT USE
+DO NOT USE
+DO NOT USE
+
+
+
 NSubstitute
 ========
 [![Build status](https://ci.appveyor.com/api/projects/status/github/nsubstitute/NSubstitute?svg=true)](https://ci.appveyor.com/project/nsubstitute/NSubstitute/branch/master) [![Travis Build Status](https://travis-ci.org/nsubstitute/NSubstitute.svg?branch=master)](https://travis-ci.org/nsubstitute/NSubstitute)
